@@ -114,6 +114,11 @@ def train_and_validate(n_input_neurons, epochs, x_train, y_train, x_val, y_val, 
                 custom_metadata=custom_metadata,
                 control_version=True,
             )
+            # In this test we aggressively close/reset the DB singleton after each checkpoint
+            # save to avoid lingering MongoClient warnings in local IDE test runners.
+            if DocumentDBDAO._instance is not None:
+                DocumentDBDAO._instance.close()
+            Flowcept._db = None
 
     final_val_loss, final_val_accuracy = validate(model, criterion, x_val, y_val)
     return {
@@ -192,11 +197,6 @@ def asserts(tasks):
 
 
 class SingleLayerPerceptronTests(unittest.TestCase):
-    def tearDown(self):
-        """Close DB singletons created during this test."""
-        if DocumentDBDAO._instance is not None:
-            DocumentDBDAO._instance.close()
-        Flowcept._db = None
 
     @unittest.skipIf(not MONGO_ENABLED, "MongoDB is disabled")
     def test_single_layer_perceptron_example_flow(self):
