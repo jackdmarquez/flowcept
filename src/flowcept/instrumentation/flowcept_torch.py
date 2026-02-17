@@ -27,7 +27,7 @@ from flowcept.flowceptor.adapters.base_interceptor import BaseInterceptor
 from flowcept.flowceptor.adapters.instrumentation_interceptor import InstrumentationInterceptor
 from flowcept.instrumentation.flowcept_task import get_current_context_task_id
 
-TORCH_CONFIG = INSTRUMENTATION.get("torch")
+TORCH_CONFIG = INSTRUMENTATION.get("torch", {})
 
 REGISTER_WORKFLOW = TORCH_CONFIG.get("register_workflow", True)
 

@@ -346,6 +346,7 @@ class DocumentDBDAO(ABC):
         custom_metadata,
         save_data_in_collection,
         pickle_,
+        control_version=False,
     ):
         """Save an object with associated metadata.
 

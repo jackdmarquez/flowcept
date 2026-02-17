@@ -61,6 +61,7 @@ Flowcept
    prov_capture
    telemetry_capture
    prov_storage
+   blob_data
    prov_query
    schemas
    contributing

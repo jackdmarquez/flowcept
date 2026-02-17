@@ -377,6 +377,7 @@ class LMDBDAO(DocumentDBDAO):
         custom_metadata,
         save_data_in_collection,
         pickle_,
+        control_version=False,
     ):
         """Save object."""
         raise NotImplementedError
