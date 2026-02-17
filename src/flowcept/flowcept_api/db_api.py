@@ -10,7 +10,6 @@ from flowcept.commons.flowcept_dataclasses.workflow_object import (
 from flowcept.commons.flowcept_dataclasses.task_object import TaskObject
 from flowcept.commons.flowcept_dataclasses.blob_object import BlobObject
 from flowcept.commons.flowcept_logger import FlowceptLogger
-from flowcept.instrumentation.flowcept_torch import get_torch_model_profile
 
 
 class DBAPI(object):
@@ -611,6 +610,7 @@ class DBAPI(object):
             custom_metadata = {}
         model_profile = {}
         if save_profile:
+            from flowcept.instrumentation.flowcept_torch import get_torch_model_profile
             model_profile = {"model_profile": get_torch_model_profile(model)}
         cm = {
             **custom_metadata,
