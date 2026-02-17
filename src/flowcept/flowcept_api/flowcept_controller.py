@@ -7,7 +7,6 @@ from uuid import uuid4
 
 import flowcept
 from flowcept.commons.autoflush_buffer import AutoflushBuffer
-from flowcept.commons.daos.docdb_dao.docdb_dao_base import DocumentDBDAO
 from flowcept.commons.daos.mq_dao.mq_dao_base import MQDao
 from flowcept.commons.flowcept_dataclasses.workflow_object import (
     WorkflowObject,
@@ -557,9 +556,15 @@ class Flowcept(object):
             for db_inserter in self._db_inserters:
                 db_inserter.stop(bundle_exec_id=self.bundle_exec_id)
 
-        if DocumentDBDAO._instance is not None:
-            DocumentDBDAO._instance.close()
-            Flowcept._db = None
+        try:
+            from flowcept.commons.daos.docdb_dao.docdb_dao_base import DocumentDBDAO
+
+            if DocumentDBDAO._instance is not None:
+                DocumentDBDAO._instance.close()
+                Flowcept._db = None
+        except Exception:
+            # Keep stop() resilient in configurations where DocDB backends are disabled.
+            pass
 
         Flowcept.buffer = self.buffer = None
         self.is_started = False

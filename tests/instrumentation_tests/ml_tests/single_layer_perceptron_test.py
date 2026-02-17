@@ -185,6 +185,13 @@ def asserts(tasks):
         assert version_doc.get("task_id") == train_task.get("task_id")
         assert version_doc.get("custom_metadata") is not None
         assert "loss" in version_doc["custom_metadata"]
+        assert "model_profile" in version_doc["custom_metadata"]
+        model_profile = version_doc["custom_metadata"]["model_profile"]
+        assert isinstance(model_profile, dict)
+        assert "params" in model_profile
+        assert "n_modules" in model_profile
+        assert "max_width" in model_profile
+        assert "model_repr" in model_profile
     torch_losses = [v["custom_metadata"]["loss"] for v in torch_versions]
     assert all(torch_losses[i] <= torch_losses[i + 1] for i in range(len(torch_losses) - 1))
     assert torch_versions[0]["version"] == len(torch_versions) - 1
@@ -227,4 +234,16 @@ class SingleLayerPerceptronTests(unittest.TestCase):
         # Path 2: torch-specific state_dict save/load API.
         reloaded_torch_model = SingleLayerPerceptron(input_size=params["n_input_neurons"])
         Flowcept.db.load_torch_model(reloaded_torch_model, torch_model_object_id)
+        self.model_metadata_asserts(reloaded_torch_model, torch_model_object_id)
         assert_single_inference_shape(reloaded_torch_model, sample)
+
+    def model_metadata_asserts(self, reloaded_torch_model, torch_model_object_id):
+        assert hasattr(reloaded_torch_model, "_flowcept_model_object")
+        flowcept_model_object = reloaded_torch_model._flowcept_model_object
+        assert flowcept_model_object["object_id"] == torch_model_object_id
+        assert "data" not in flowcept_model_object
+        assert flowcept_model_object["type"] == "ml_model"
+        assert flowcept_model_object["task_id"] is not None
+        assert flowcept_model_object["workflow_id"] is not None
+        assert flowcept_model_object["custom_metadata"] is not None
+        assert "model_profile" in flowcept_model_object["custom_metadata"]

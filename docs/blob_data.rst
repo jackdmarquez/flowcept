@@ -96,6 +96,9 @@ List versions metadata only (no blob bytes):
 
 - ``Flowcept.db.get_object_history(object_id)``
 
+See a full model-checkpoint walkthrough:
+:doc:`Versioned Single-Layer Perceptron Example <blob_versioned_model_example>`.
+
 
 Simple Example: Store Bytes + Linkage Fields
 ---------------------------------------------

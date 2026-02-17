@@ -10,6 +10,7 @@ from flowcept.commons.flowcept_dataclasses.workflow_object import (
 from flowcept.commons.flowcept_dataclasses.task_object import TaskObject
 from flowcept.commons.flowcept_dataclasses.blob_object import BlobObject
 from flowcept.commons.flowcept_logger import FlowceptLogger
+from flowcept.instrumentation.flowcept_torch import get_torch_model_profile
 
 
 class DBAPI(object):
@@ -570,6 +571,7 @@ class DBAPI(object):
         workflow_id=None,
         custom_metadata=None,
         control_version=False,
+        save_profile=True,
     ) -> str:
         """Save a PyTorch model state dictionary as an object blob.
 
@@ -588,6 +590,9 @@ class DBAPI(object):
         control_version : bool, optional
             Enable append-only history semantics when updating an existing
             logical object id.
+        save_profile : bool, optional
+            If ``True`` (default), adds ``model_profile`` to
+            ``custom_metadata`` using Flowcept PyTorch profiling.
 
         Returns
         -------
@@ -604,8 +609,12 @@ class DBAPI(object):
         binary_data = buffer.read()
         if custom_metadata is None:
             custom_metadata = {}
+        model_profile = {}
+        if save_profile:
+            model_profile = {"model_profile": get_torch_model_profile(model)}
         cm = {
             **custom_metadata,
+            **model_profile,
             "class": model.__class__.__name__,
         }
         obj_id = self.save_or_update_object(
@@ -634,6 +643,11 @@ class DBAPI(object):
         -------
         dict
             Object document used to load the model.
+
+        Notes
+        -----
+        This method also attaches ``model._flowcept_model_object`` with object
+        metadata only (all available fields except blob bytes in ``data``).
         """
         import torch
         import io
@@ -649,5 +663,6 @@ class DBAPI(object):
         buffer = io.BytesIO(binary_data)
         state_dict = torch.load(buffer, weights_only=True)
         model.load_state_dict(state_dict)
+        model._flowcept_model_object = {k: v for k, v in doc.items() if k != "data"}
 
         return doc
