@@ -382,6 +382,33 @@ class Flowcept(object):
         return buffer
 
     @staticmethod
+    def generate_report(
+        report_type: str = "provenance_card",
+        format: str = "markdown",
+        output_path: str | None = None,
+        input_jsonl_path: str | None = None,
+        records: List[Dict[str, Any]] | None = None,
+        workflow_id: str | None = None,
+        campaign_id: str | None = None,
+    ) -> Dict[str, Any]:
+        """Generate a report from JSONL, records, or DB data.
+
+        This method is a lightweight facade that delegates implementation to
+        ``flowcept.report.service.generate_report``.
+        """
+        from flowcept.report.service import generate_report
+
+        return generate_report(
+            report_type=report_type,
+            format=format,
+            output_path=output_path,
+            input_jsonl_path=input_jsonl_path,
+            records=records,
+            workflow_id=workflow_id,
+            campaign_id=campaign_id,
+        )
+
+    @staticmethod
     def delete_buffer_file(path: str = None):
         """
         Delete the buffer file from disk if it exists.

@@ -38,6 +38,9 @@ The main object API is:
 - ``Flowcept.db.save_or_update_ml_model(...)`` (alias with ``type="ml_model"`` preset)
 - ``Flowcept.db.get_ml_model(object_id)`` (alias to ``get_blob_object``)
 - ``Flowcept.db.ml_model_query(filter)`` (alias to ``blob_object_query``)
+- ``Flowcept.db.save_or_update_dataset(...)`` (alias with ``type="dataset"`` preset)
+- ``Flowcept.db.get_dataset(object_id)`` (alias to ``get_blob_object``)
+- ``Flowcept.db.dataset_query(filter)`` (alias to ``blob_object_query``)
 
 Object records are stored in the ``objects`` collection and can include:
 
@@ -99,6 +102,9 @@ List versions metadata only (no blob bytes):
 See a full model-checkpoint walkthrough:
 :doc:`Versioned Single-Layer Perceptron Example <blob_versioned_model_example>`.
 
+See a full multilayer perceptron walkthrough (including dataset persistence):
+:doc:`Versioned Multilayer Perceptron Example <blob_multilayer_perceptron_example>`.
+
 
 Simple Example: Store Bytes + Linkage Fields
 ---------------------------------------------
@@ -146,6 +152,31 @@ Simple Example: Update Existing Object Metadata
    # version is now incremented by the DB update
    updated = Flowcept.db.get_blob_object(obj_id)
    assert updated.version == 1
+
+
+Simple Example: Save Dataset Snapshot (Alias API)
+-------------------------------------------------
+
+.. code-block:: python
+
+   with Flowcept(workflow_name="dataset_blob_demo"):
+       ds_id = Flowcept.db.save_or_update_dataset(
+           object={
+               "x_train": x_train,
+               "y_train": y_train,
+               "x_val": x_val,
+               "y_val": y_val,
+           },
+           task_id="prepare_data_001",
+           custom_metadata={"split_ratio": 0.8, "n_samples": 120},
+           save_data_in_collection=True,
+           pickle=True,
+           control_version=True,
+       )
+
+       ds_blob = Flowcept.db.get_dataset(ds_id)
+       assert ds_blob.type == "dataset"
+       assert ds_blob.task_id == "prepare_data_001"
 
 
 PyTorch Model Helpers (Flowcept.db)

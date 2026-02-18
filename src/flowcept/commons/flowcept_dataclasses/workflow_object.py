@@ -9,7 +9,6 @@ from flowcept.commons.utils import get_utc_now, get_git_info
 from flowcept.commons.flowcept_logger import FlowceptLogger
 from flowcept.configs import (
     settings,
-    FLOWCEPT_USER,
     SYS_NAME,
     EXTRA_METADATA,
     ENVIRONMENT_ID,
@@ -123,7 +122,9 @@ class WorkflowObject:
             self.adapter_id = adapter_key
 
         if self.user is None:
-            self.user = FLOWCEPT_USER
+            from flowcept.configs import LOGIN_NAME, FLOWCEPT_USER
+
+            self.user = LOGIN_NAME or FLOWCEPT_USER
 
         if self.environment_id is None and ENVIRONMENT_ID is not None:
             self.environment_id = ENVIRONMENT_ID

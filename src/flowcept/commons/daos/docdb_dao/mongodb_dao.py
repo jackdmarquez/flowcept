@@ -476,12 +476,27 @@ class MongoDBDAO(DocumentDBDAO):
                 blob = pickle.dumps(object_payload)
                 obj_doc["pickle"] = True
             obj_doc["data"] = blob
+            try:
+                obj_doc["object_size_bytes"] = int(len(blob))
+            except Exception:
+                pass
             obj_doc.pop("grid_fs_file_id", None)
         else:
             from gridfs import GridFS
 
             fs = GridFS(self._db)
-            obj_doc["grid_fs_file_id"] = fs.put(object_payload)
+            file_id = fs.put(object_payload)
+            obj_doc["grid_fs_file_id"] = file_id
+            size_bytes = None
+            try:
+                size_bytes = int(len(object_payload))
+            except Exception:
+                try:
+                    size_bytes = int(fs.get(file_id).length)
+                except Exception:
+                    size_bytes = None
+            if size_bytes is not None:
+                obj_doc["object_size_bytes"] = size_bytes
             obj_doc.pop("data", None)
             if pickle_:
                 obj_doc["pickle"] = True
@@ -503,6 +518,7 @@ class MongoDBDAO(DocumentDBDAO):
             "workflow_id": doc.get("workflow_id"),
             "type": doc.get("type"),
             "custom_metadata": doc.get("custom_metadata"),
+            "object_size_bytes": doc.get("object_size_bytes"),
             "storage_type": storage_type,
             "pickle": bool(doc.get("pickle", False)),
         }
@@ -522,6 +538,7 @@ class MongoDBDAO(DocumentDBDAO):
             "workflow_id": latest_doc.get("workflow_id"),
             "type": latest_doc.get("type"),
             "custom_metadata": latest_doc.get("custom_metadata"),
+            "object_size_bytes": latest_doc.get("object_size_bytes"),
         }
         if "data" in latest_doc:
             history_doc["data"] = latest_doc["data"]

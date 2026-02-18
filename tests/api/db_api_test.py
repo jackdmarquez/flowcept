@@ -215,6 +215,29 @@ class DBAPITest(unittest.TestCase):
             assert docs[0]["data"] == payload
 
     @unittest.skipIf(not MONGO_ENABLED, "MongoDB is disabled")
+    def test_dataset_aliases(self):
+        payload = b"dataset-bytes"
+        with Flowcept(workflow_name="dataset_alias_test"):
+            obj_id = Flowcept.db.save_or_update_dataset(
+                object=payload,
+                task_id="task_dataset_1",
+                save_data_in_collection=True,
+            )
+            expected_wf_id = Flowcept.current_workflow_id
+
+            blob = Flowcept.db.get_dataset(obj_id)
+            assert isinstance(blob, BlobObject)
+            assert blob.object_id == obj_id
+            assert blob.type == "dataset"
+            assert blob.task_id == "task_dataset_1"
+            assert blob.workflow_id == expected_wf_id
+
+            docs = Flowcept.db.dataset_query(filter={"object_id": obj_id, "type": "dataset"})
+            assert docs is not None
+            assert len(docs) == 1
+            assert docs[0]["data"] == payload
+
+    @unittest.skipIf(not MONGO_ENABLED, "MongoDB is disabled")
     def test_save_object_defaults_workflow_id_from_current_workflow(self):
         with Flowcept(workflow_name="blob_default_wf_test"):
             current_wf_id = Flowcept.current_workflow_id

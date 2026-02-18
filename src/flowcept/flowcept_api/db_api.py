@@ -251,6 +251,38 @@ class DBAPI(object):
         """
         return self.blob_object_query(filter)
 
+    def get_dataset(self, object_id, version=None) -> BlobObject:
+        """Alias to get a dataset blob object.
+
+        Parameters
+        ----------
+        object_id : str
+            Object identifier.
+        version : int or None, optional
+            ``None`` for latest, integer for exact version.
+
+        Returns
+        -------
+        BlobObject or None
+            Requested dataset blob object.
+        """
+        return self.get_blob_object(object_id, version=version)
+
+    def dataset_query(self, filter) -> List[Dict]:
+        """Alias to query dataset blob objects.
+
+        Parameters
+        ----------
+        filter : dict
+            Filter expression for object records.
+
+        Returns
+        -------
+        list of dict or None
+            Matching object documents.
+        """
+        return self.blob_object_query(filter)
+
     def get_object_history(self, object_id) -> List[Dict]:
         """Get object version metadata history (latest first, no blob payload).
 
@@ -536,6 +568,58 @@ class DBAPI(object):
             Associated workflow identifier.
         type : str, optional
             Category label. Defaults to ``"ml_model"``.
+        custom_metadata : dict, optional
+            Custom metadata.
+        save_data_in_collection : bool, optional
+            In-object data storage toggle (``data`` field in ``objects``).
+        pickle : bool, optional
+            Pickle before storage.
+        control_version : bool, optional
+            Enable append-only history semantics.
+
+        Returns
+        -------
+        str
+            Persisted object identifier.
+        """
+        return self.save_or_update_object(
+            object=object,
+            object_id=object_id,
+            task_id=task_id,
+            workflow_id=workflow_id,
+            type=type,
+            custom_metadata=custom_metadata,
+            save_data_in_collection=save_data_in_collection,
+            pickle=pickle,
+            control_version=control_version,
+        )
+
+    def save_or_update_dataset(
+        self,
+        object,
+        object_id=None,
+        task_id=None,
+        workflow_id=None,
+        type="dataset",
+        custom_metadata=None,
+        save_data_in_collection=False,
+        pickle=False,
+        control_version=False,
+    ) -> str:
+        """Alias to save or update dataset blobs.
+
+        Parameters
+        ----------
+        object : Any
+            Dataset payload bytes/object.
+        object_id : str, optional
+            Logical object identifier.
+        task_id : str, optional
+            Associated task identifier.
+        workflow_id : str, optional
+            Associated workflow identifier.
+        type : str, optional
+            Category label. Defaults to ``"dataset"``.
         custom_metadata : dict, optional
             Custom metadata.
         save_data_in_collection : bool, optional

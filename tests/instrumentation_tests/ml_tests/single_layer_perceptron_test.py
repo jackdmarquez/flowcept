@@ -1,5 +1,7 @@
 import unittest
 import pickle
+import os
+import random
 
 import pytest
 
@@ -10,9 +12,38 @@ import torch.nn as nn
 import torch.optim as optim
 
 from flowcept import Flowcept
-from flowcept.commons.daos.docdb_dao.docdb_dao_base import DocumentDBDAO
 from flowcept.configs import MONGO_ENABLED
 from flowcept.instrumentation.flowcept_task import flowcept_task, get_current_context_task_id
+
+
+def _set_reproducibility(seed=0):
+    """Apply deterministic settings and return one reproducibility dict."""
+    reproducibility = {}
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if hasattr(torch, "use_deterministic_algorithms"):
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    reproducibility["seed"] = seed
+    reproducibility["python_random_seeded"] = True
+    reproducibility["torch_manual_seeded"] = True
+    reproducibility["torch_cuda_manual_seeded"] = torch.cuda.is_available()
+    reproducibility["torch_deterministic_algorithms"] = (
+        torch.are_deterministic_algorithms_enabled()
+        if hasattr(torch, "are_deterministic_algorithms_enabled")
+        else True
+    )
+    reproducibility["torch_cudnn_deterministic"] = (
+        bool(getattr(torch.backends.cudnn, "deterministic", False)) if hasattr(torch.backends, "cudnn") else False
+    )
+    reproducibility["torch_cudnn_benchmark"] = (
+        bool(getattr(torch.backends.cudnn, "benchmark", False)) if hasattr(torch.backends, "cudnn") else False
+    )
+    return reproducibility
 
 
 def shape_args_handler(*args, **kwargs):
@@ -46,16 +77,37 @@ class SingleLayerPerceptron(nn.Module):
 
 @flowcept_task(
     args_handler=shape_args_handler,
-    output_names=["x_train_shape", "y_train_shape", "x_val_shape", "y_val_shape"],
+    output_names=["x_train_shape", "y_train_shape", "x_val_shape", "y_val_shape", "dataset_id"],
 )
 def get_dataset(n_samples, split_ratio):
     """Generate a toy binary classification dataset."""
-    x = torch.cat([torch.randn(n_samples // 2, 2) + 2, torch.randn(n_samples // 2, 2) - 2])
+    generator = torch.Generator().manual_seed(torch.initial_seed())
+    x = torch.cat(
+        [
+            torch.randn(n_samples // 2, 2, generator=generator) + 2,
+            torch.randn(n_samples // 2, 2, generator=generator) - 2,
+        ]
+    )
     y = torch.cat([torch.zeros(n_samples // 2), torch.ones(n_samples // 2)]).unsqueeze(1)
     n_train = int(n_samples * split_ratio)
     x_train, x_val = x[:n_train], x[n_train:]
     y_train, y_val = y[:n_train], y[n_train:]
-    return x_train, y_train, x_val, y_val
+    dataset_task_id = get_current_context_task_id()
+    custom_metadata = {"n_samples": n_samples, "split_ratio": split_ratio}
+    dataset_object_id = Flowcept.db.save_or_update_dataset(
+        object={
+            "x_train": x_train,
+            "y_train": y_train,
+            "x_val": x_val,
+            "y_val": y_val,
+        },
+        task_id=dataset_task_id,
+        custom_metadata=custom_metadata,
+        save_data_in_collection=True,
+        pickle=True,
+        control_version=True,
+    )
+    return x_train, y_train, x_val, y_val, dataset_object_id
 
 
 def validate(model, criterion, x_val, y_val):
@@ -70,8 +122,8 @@ def validate(model, criterion, x_val, y_val):
 
 
 @flowcept_task
-def train_and_validate(n_input_neurons, epochs, x_train, y_train, x_val, y_val, checkpoint_check=2):
-    """Train a perceptron and return final validation metrics."""
+def train_and_validate(n_input_neurons, epochs, x_train, y_train, x_val, y_val, dataset_id=None, checkpoint_check=2):
+    """Train a perceptron and return final validation metrics. dataset_id is only used for provenance"""
     model = SingleLayerPerceptron(input_size=n_input_neurons, get_profile=True)
     criterion = nn.BCELoss()
     optimizer = optim.SGD(model.parameters(), lr=0.1)
@@ -114,11 +166,6 @@ def train_and_validate(n_input_neurons, epochs, x_train, y_train, x_val, y_val, 
                 custom_metadata=custom_metadata,
                 control_version=True,
             )
-            # In this test we aggressively close/reset the DB singleton after each checkpoint
-            # save to avoid lingering MongoClient warnings in local IDE test runners.
-            if DocumentDBDAO._instance is not None:
-                DocumentDBDAO._instance.close()
-            Flowcept._db = None
 
     final_val_loss, final_val_accuracy = validate(model, criterion, x_val, y_val)
     return {
@@ -130,14 +177,13 @@ def train_and_validate(n_input_neurons, epochs, x_train, y_train, x_val, y_val, 
     }
 
 
-def run_training(n_samples, split_ratio, n_input_neurons, epochs, seed):
+def run_training(n_samples, split_ratio, n_input_neurons, epochs):
     """Perceptron training entrypoint."""
-    torch.manual_seed(seed)
     # Data Prep:
-    x_train, y_train, x_val, y_val = get_dataset(n_samples, split_ratio)
+    x_train, y_train, x_val, y_val, dataset_id = get_dataset(n_samples, split_ratio)
 
     # Train and Validate:
-    result = train_and_validate(n_input_neurons, epochs, x_train, y_train, x_val, y_val)
+    result = train_and_validate(n_input_neurons, epochs, x_train, y_train, x_val, y_val, dataset_id=dataset_id)
     return result
 
 
@@ -198,6 +244,21 @@ def asserts(tasks):
 
     assert len(torch_versions) == len(versions)
 
+    dataset_docs = Flowcept.db.dataset_query(
+        filter={
+            "type": "dataset",
+            "task_id": dataset_task.get("task_id"),
+            "workflow_id": Flowcept.current_workflow_id,
+        }
+    )
+    assert dataset_docs is not None
+    assert len(dataset_docs) > 0
+    dataset_blob = Flowcept.db.get_dataset(dataset_docs[0]["object_id"])
+    assert dataset_blob is not None
+    assert dataset_blob.type == "dataset"
+    assert dataset_blob.task_id == dataset_task.get("task_id")
+    assert dataset_blob.workflow_id == Flowcept.current_workflow_id
+
     workflows = Flowcept.db.query({"campaign_id": Flowcept.campaign_id}, collection="workflows")
     assert any(wf.get("name") == "Perceptron Train" for wf in workflows)
     return ml_model_object_id, torch_model_object_id
@@ -211,11 +272,12 @@ class SingleLayerPerceptronTests(unittest.TestCase):
             "n_samples": 120,
             "split_ratio": 0.8,
             "n_input_neurons": 2,
-            "epochs": 4,
-            "seed": 0,
+            "epochs": 6,
         }
 
-        with Flowcept(workflow_name="Perceptron Train"):
+        reproducibility = _set_reproducibility(seed=42)
+
+        with Flowcept(workflow_name="Perceptron Train", workflow_args=reproducibility) as flowcept:
             run_training(**params)
 
         tasks = Flowcept.db.get_tasks_from_current_workflow()
@@ -236,6 +298,29 @@ class SingleLayerPerceptronTests(unittest.TestCase):
         Flowcept.db.load_torch_model(reloaded_torch_model, torch_model_object_id)
         self.model_metadata_asserts(reloaded_torch_model, torch_model_object_id)
         assert_single_inference_shape(reloaded_torch_model, sample)
+
+        self.provenance_card_generation(Flowcept.current_workflow_id)
+
+
+    def provenance_card_generation(self, workflow_id):
+        card_path = f"./PROVENANCE_CARD_{workflow_id}.md"
+        if os.path.exists(card_path):
+            os.remove(card_path)
+        stats = Flowcept.generate_report(
+            report_type="provenance_card",
+            format="markdown",
+            output_path=card_path,
+            workflow_id=workflow_id,
+        )
+        assert os.path.exists(card_path)
+        assert stats["report_type"] == "provenance_card"
+        assert stats["format"] == "markdown"
+        with open(card_path, "r", encoding="utf-8") as f:
+            card_text = f.read()
+        assert "Perceptron Train" in card_text
+        assert "## Aggregation Method" in card_text
+        assert "## Object Artifacts Summary" in card_text
+
 
     def model_metadata_asserts(self, reloaded_torch_model, torch_model_object_id):
         assert hasattr(reloaded_torch_model, "_flowcept_model_object")

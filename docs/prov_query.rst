@@ -54,6 +54,9 @@ For programmatic access inside scripts and notebooks, Flowcept exposes a databas
 For blob/object persistence, versioning, and retrieval APIs, see
 `Blob data docs <blob_data.html>`_.
 
+For summarized report generation (for example, provenance cards), see
+`Reporting docs <reporting.html>`_.
+
 Below is a typical usage pattern:
 
 .. code-block:: python
