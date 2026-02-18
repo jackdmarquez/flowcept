@@ -647,7 +647,7 @@ def render_provenance_card_markdown(
     """Render a summarized provenance-card markdown file."""
     workflow = dataset.get("workflow", {}) if isinstance(dataset.get("workflow"), dict) else {}
     tasks = dataset.get("tasks", []) if isinstance(dataset.get("tasks"), list) else []
-    tasks_sorted = sorted(tasks, key=lambda t: (as_float(t.get("started_at")) or float("inf")))
+    tasks_sorted = sorted(tasks, key=lambda t: as_float(t.get("started_at")) or float("inf"))
 
     starts = [as_float(t.get("started_at")) for t in tasks if as_float(t.get("started_at")) is not None]
     ends = [as_float(t.get("ended_at")) for t in tasks if as_float(t.get("ended_at")) is not None]
@@ -683,7 +683,7 @@ def render_provenance_card_markdown(
             (_to_str(t.get("activity_id")), elapsed_seconds(t.get("started_at"), t.get("ended_at")))
             for t in tasks_sorted
         ],
-        key=lambda x: (x[1] if x[1] is not None else -1),
+        key=lambda x: x[1] if x[1] is not None else -1,
         reverse=True,
     )[:5]
 

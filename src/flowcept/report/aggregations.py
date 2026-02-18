@@ -73,7 +73,7 @@ def group_transformations(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             }
         )
 
-    rows.sort(key=lambda r: (r["started_at_min"] if r["started_at_min"] is not None else float("inf")))
+    rows.sort(key=lambda r: r["started_at_min"] if r["started_at_min"] is not None else float("inf"))
     return rows
 
 
