@@ -5,6 +5,7 @@ from typing import List, Dict, Tuple, Any
 import io
 import json
 from uuid import uuid4
+from datetime import datetime, timezone
 
 import pickle
 import zipfile
@@ -29,7 +30,7 @@ from flowcept.configs import PERF_LOG, MONGO_CREATE_INDEX
 from flowcept.flowceptor.consumers.consumer_utils import (
     curate_dict_task_messages,
 )
-from time import time
+from time import time, sleep
 
 
 class MongoDBDAO(DocumentDBDAO):
@@ -82,6 +83,7 @@ class MongoDBDAO(DocumentDBDAO):
         self._tasks_collection = self._db["tasks"]
         self._wfs_collection = self._db["workflows"]
         self._obj_collection = self._db["objects"]
+        self._obj_history_collection = self._db["object_history"]
 
         if create_indices:
             self._create_indices()
@@ -119,6 +121,15 @@ class MongoDBDAO(DocumentDBDAO):
             self._obj_collection.create_index(TaskObject.task_id_field(), unique=False)
         if "campaign_id" not in existing_indices:
             self._obj_collection.create_index("campaign_id")
+
+        # Creating object_history collection indices:
+        existing_history_indices = [list(x["key"].keys()) for x in self._obj_history_collection.list_indexes()]
+        if ["object_id", "version"] not in existing_history_indices:
+            self._obj_history_collection.create_index([("object_id", 1), ("version", 1)], unique=True)
+        if ["object_id"] not in existing_history_indices:
+            self._obj_history_collection.create_index("object_id")
+        if ["created_at"] not in existing_history_indices:
+            self._obj_history_collection.create_index("created_at")
 
     def _pipeline(
         self,
@@ -451,6 +462,114 @@ class MongoDBDAO(DocumentDBDAO):
             self.logger.exception(e)
             return -1
 
+    @staticmethod
+    def _utc_now():
+        """Get timezone-aware UTC timestamp."""
+        return datetime.now(timezone.utc)
+
+    def _build_blob_storage_doc(self, object_payload, save_data_in_collection=False, pickle_=False):
+        """Build the storage-specific blob document fields."""
+        obj_doc = {}
+        if save_data_in_collection:
+            blob = object_payload
+            if pickle_:
+                blob = pickle.dumps(object_payload)
+                obj_doc["pickle"] = True
+            obj_doc["data"] = blob
+            try:
+                obj_doc["object_size_bytes"] = int(len(blob))
+            except Exception:
+                pass
+            obj_doc.pop("grid_fs_file_id", None)
+        else:
+            from gridfs import GridFS
+
+            fs = GridFS(self._db)
+            file_id = fs.put(object_payload)
+            obj_doc["grid_fs_file_id"] = file_id
+            size_bytes = None
+            try:
+                size_bytes = int(len(object_payload))
+            except Exception:
+                try:
+                    size_bytes = int(fs.get(file_id).length)
+                except Exception:
+                    size_bytes = None
+            if size_bytes is not None:
+                obj_doc["object_size_bytes"] = size_bytes
+            obj_doc.pop("data", None)
+            if pickle_:
+                obj_doc["pickle"] = True
+        return obj_doc
+
+    @staticmethod
+    def _history_metadata(doc):
+        """Build metadata-only view for a blob document."""
+        storage_type = "in_object" if "data" in doc else "gridfs"
+        return {
+            "object_id": doc.get("object_id"),
+            "version": int(doc.get("version", 0)),
+            "created_at": doc.get("created_at"),
+            "created_by": doc.get("created_by"),
+            "updated_at": doc.get("updated_at"),
+            "updated_by": doc.get("updated_by"),
+            "prev_version": doc.get("prev_version"),
+            "task_id": doc.get("task_id"),
+            "workflow_id": doc.get("workflow_id"),
+            "type": doc.get("type"),
+            "custom_metadata": doc.get("custom_metadata"),
+            "object_size_bytes": doc.get("object_size_bytes"),
+            "storage_type": storage_type,
+            "pickle": bool(doc.get("pickle", False)),
+        }
+
+    def _persist_history_from_latest(self, latest_doc, session=None):
+        """Append current latest document into object history."""
+        history_doc = {
+            "object_id": latest_doc["object_id"],
+            "version": int(latest_doc["version"]),
+            "created_at": latest_doc.get("created_at"),
+            "created_by": latest_doc.get("created_by"),
+            "updated_at": latest_doc.get("updated_at"),
+            "updated_by": latest_doc.get("updated_by"),
+            "prev_version": latest_doc.get("prev_version"),
+            "source": "objects_snapshot",
+            "task_id": latest_doc.get("task_id"),
+            "workflow_id": latest_doc.get("workflow_id"),
+            "type": latest_doc.get("type"),
+            "custom_metadata": latest_doc.get("custom_metadata"),
+            "object_size_bytes": latest_doc.get("object_size_bytes"),
+        }
+        if "data" in latest_doc:
+            history_doc["data"] = latest_doc["data"]
+        if "grid_fs_file_id" in latest_doc:
+            history_doc["grid_fs_file_id"] = latest_doc["grid_fs_file_id"]
+        if "pickle" in latest_doc:
+            history_doc["pickle"] = latest_doc["pickle"]
+        self._obj_history_collection.insert_one(history_doc, session=session)
+
+    def _update_with_optional_transaction(self, object_id, expected_version, latest_doc, update_doc):
+        """Try history+latest update in a transaction, falling back to non-transaction when unsupported."""
+        try:
+            with self._client.start_session() as session:
+                with session.start_transaction():
+                    self._persist_history_from_latest(latest_doc, session=session)
+                    result = self._obj_collection.update_one(
+                        {"object_id": object_id, "version": expected_version},
+                        {"$set": update_doc},
+                        upsert=False,
+                        session=session,
+                    )
+                    return result.matched_count
+        except Exception:
+            self._persist_history_from_latest(latest_doc)
+            result = self._obj_collection.update_one(
+                {"object_id": object_id, "version": expected_version},
+                {"$set": update_doc},
+                upsert=False,
+            )
+            return result.matched_count
+
     def insert_or_update_workflow(self, workflow_obj: WorkflowObject) -> bool:
         """Insert or update workflow."""
         _dict = workflow_obj.to_dict().copy()
@@ -600,25 +719,24 @@ class MongoDBDAO(DocumentDBDAO):
         custom_metadata=None,
         save_data_in_collection=False,
         pickle_=False,
+        control_version=False,
     ):
         """Save an object."""
         if object_id is None:
             object_id = str(uuid4())
-        obj_doc = {"object_id": object_id}
+        now = MongoDBDAO._utc_now()
+        from flowcept.configs import FLOWCEPT_USER
 
-        if save_data_in_collection:
-            blob = object
-            if pickle_:
-                blob = pickle.dumps(object)
-                obj_doc["pickle"] = True
-            obj_doc["data"] = blob
+        actor = FLOWCEPT_USER
 
-        else:
-            from gridfs import GridFS
-
-            fs = GridFS(self._db)
-            grid_fs_file_id = fs.put(object)
-            obj_doc["grid_fs_file_id"] = grid_fs_file_id
+        obj_doc = {
+            "object_id": object_id,
+            **self._build_blob_storage_doc(
+                object_payload=object,
+                save_data_in_collection=save_data_in_collection,
+                pickle_=pickle_,
+            ),
+        }
 
         if task_id is not None:
             obj_doc["task_id"] = task_id
@@ -629,13 +747,73 @@ class MongoDBDAO(DocumentDBDAO):
         if custom_metadata is not None:
             obj_doc["custom_metadata"] = custom_metadata
 
-        update_query = {
-            "$set": obj_doc,
-        }
+        if not control_version:
+            update_query = [
+                {
+                    "$set": {
+                        **obj_doc,
+                        "version": {"$add": [{"$ifNull": ["$version", -1]}, 1]},
+                    }
+                }
+            ]
+            self._obj_collection.update_one(
+                {"object_id": object_id},
+                update_query,
+                upsert=True,
+            )
+            return object_id
 
-        self._obj_collection.update_one({"object_id": object_id}, update_query, upsert=True)
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            latest_doc = self._obj_collection.find_one({"object_id": object_id})
+            if latest_doc is None:
+                insert_doc = {
+                    **obj_doc,
+                    "version": 0,
+                    "prev_version": None,
+                    "created_at": now,
+                    "created_by": actor,
+                    "updated_at": now,
+                    "updated_by": actor,
+                }
+                try:
+                    self._obj_collection.insert_one(insert_doc)
+                    return object_id
+                except Exception:
+                    if attempt == max_attempts - 1:
+                        raise
+                    sleep(0.02 * (attempt + 1))
+                    continue
 
-        return object_id
+            expected_version = int(latest_doc.get("version", 0))
+            update_doc = {
+                **obj_doc,
+                "version": expected_version + 1,
+                "prev_version": expected_version,
+                "created_at": latest_doc.get("created_at", now),
+                "created_by": latest_doc.get("created_by", actor),
+                "updated_at": now,
+                "updated_by": actor,
+            }
+            try:
+                matched_count = self._update_with_optional_transaction(
+                    object_id=object_id,
+                    expected_version=expected_version,
+                    latest_doc=latest_doc,
+                    update_doc=update_doc,
+                )
+                if matched_count == 1:
+                    return object_id
+                # CAS failed; remove potential duplicate history append on next trial by ignoring dup insert.
+                sleep(0.02 * (attempt + 1))
+            except Exception as e:
+                # Duplicate history insert or transient race; retry.
+                if attempt == max_attempts - 1:
+                    raise e
+                sleep(0.02 * (attempt + 1))
+                continue
+
+        raise ValueError(f"Could not update object_id={object_id} due to repeated concurrent CAS failures.")
 
     def get_file_data(self, file_id):
         """Get a file in the GridFS."""
@@ -651,6 +829,55 @@ class MongoDBDAO(DocumentDBDAO):
         except Exception as e:
             self.logger.exception(f"An error occurred: {e}")
             return None
+
+    def get_blob_object_doc(self, object_id, version=None):
+        """Get blob document by object id and optional exact version.
+
+        Parameters
+        ----------
+        object_id : str
+            Logical object identifier.
+        version : int or None, optional
+            ``None`` returns latest from ``objects``.
+            Integer version returns the exact version from latest or history.
+        """
+        latest_doc = self._obj_collection.find_one({"object_id": object_id})
+        if latest_doc is None:
+            raise ValueError(f"Object not found for object_id={object_id}.")
+
+        if version is None:
+            doc = latest_doc
+        else:
+            version = int(version)
+            if int(latest_doc.get("version", -1)) == version:
+                doc = latest_doc
+            else:
+                doc = self._obj_history_collection.find_one({"object_id": object_id, "version": version})
+            if doc is None:
+                raise ValueError(f"Object not found for object_id={object_id}, version={version}.")
+
+        if "grid_fs_file_id" in doc and "data" not in doc:
+            data = self.get_file_data(doc["grid_fs_file_id"])
+            if data is None:
+                raise ValueError(f"Object payload not found in GridFS for object_id={object_id}, version={version}.")
+            doc["data"] = data
+        return doc
+
+    def get_object_history(self, object_id) -> List[Dict]:
+        """Get metadata for all versions of an object (latest first)."""
+        versions = []
+        latest_doc = self._obj_collection.find_one({"object_id": object_id})
+        if latest_doc is not None:
+            versions.append(MongoDBDAO._history_metadata(latest_doc))
+
+        history_docs = list(self._obj_history_collection.find({"object_id": object_id}))
+        versions.extend(MongoDBDAO._history_metadata(doc) for doc in history_docs)
+        versions.sort(key=lambda d: d["version"], reverse=True)
+        return versions
+
+    def list_object_versions(self, object_id) -> List[Dict]:
+        """Backward-compatible alias to ``get_object_history``."""
+        return self.get_object_history(object_id)
 
     def query(
         self,
@@ -704,8 +931,12 @@ class MongoDBDAO(DocumentDBDAO):
             return self.workflow_query(filter, projection, limit, sort, remove_json_unserializables)
         elif collection == "objects":
             return self.object_query(filter)
+        elif collection == "object_history":
+            return list(self._obj_history_collection.find(filter))
         else:
-            raise Exception(f"You used type={collection}, but MongoDB only stores tasks, workflows, and objects")
+            raise Exception(
+                f"You used type={collection}, but MongoDB only stores tasks, workflows, objects, and object_history"
+            )
 
     def raw_task_pipeline(self, pipeline: List[Dict]):
         """

@@ -73,9 +73,17 @@ class DocumentDBDAO(ABC):
         return DocumentDBDAO._instance
 
     def close(self):
-        """Close DAO connections and release resources."""
-        del DocumentDBDAO._instance
-        DocumentDBDAO._instance = None
+        """Close DAO connections and release resources.
+
+        Notes
+        -----
+        Only clears the class-level singleton when ``self`` is that singleton.
+        This prevents non-singleton DAO instances (e.g., consumer-owned DAOs)
+        from accidentally dropping the global singleton reference before it is
+        properly closed.
+        """
+        if DocumentDBDAO._instance is self:
+            DocumentDBDAO._instance = None
 
     @abstractmethod
     def insert_and_update_many_tasks(self, docs: List[Dict], indexing_key=None):
@@ -346,6 +354,7 @@ class DocumentDBDAO(ABC):
         custom_metadata,
         save_data_in_collection,
         pickle_,
+        control_version=False,
     ):
         """Save an object with associated metadata.
 

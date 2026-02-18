@@ -61,6 +61,9 @@ Flowcept
    prov_capture
    telemetry_capture
    prov_storage
+   blob_data
+   blob_multilayer_perceptron_example
+   reporting
    prov_query
    schemas
    contributing

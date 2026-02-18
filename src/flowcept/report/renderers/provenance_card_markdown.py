@@ -1,0 +1,1093 @@
+"""Markdown renderer for provenance-card reports."""
+
+from __future__ import annotations
+
+from collections import Counter, defaultdict
+from datetime import datetime
+import math
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from flowcept import __version__
+from flowcept.report.aggregations import as_float, elapsed_seconds, fmt_timestamp_utc
+from flowcept.report.sanitization import sanitize_json_like
+
+
+def _to_str(value: Any, default: str = "unknown") -> str:
+    if value is None:
+        return default
+    return str(value)
+
+
+def _fmt_seconds(value: Optional[float]) -> str:
+    if value is None:
+        return "unknown"
+    return f"{float(value):.3f}"
+
+
+def _fmt_percent(value: Optional[float]) -> str:
+    if value is None or value <= 0:
+        return "-"
+    return f"{value:.1f}%"
+
+
+def _fmt_count(value: Optional[float]) -> str:
+    if value is None or value <= 0:
+        return "-"
+    return f"{int(value):,}"
+
+
+def _fmt_bytes(value: Optional[float]) -> str:
+    if value is None or value <= 0:
+        return "-"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    v = float(value)
+    idx = 0
+    while v >= 1024 and idx < len(units) - 1:
+        v /= 1024.0
+        idx += 1
+    if idx == 0:
+        return f"{int(v)} {units[idx]}"
+    return f"{v:.2f} {units[idx]}"
+
+
+def _fmt_text(value: Any, default: str = "-") -> str:
+    """Render scalar values with a consistent empty fallback."""
+    if value is None:
+        return default
+    text = str(value)
+    return text if text else default
+
+
+def _fmt_nonzero_seconds(value: Optional[float]) -> str:
+    """Render seconds only when strictly positive."""
+    if value is None or value <= 0:
+        return "-"
+    return f"{float(value):.3f}"
+
+
+def _is_simple_value(value: Any) -> bool:
+    """Return True for simple scalar values suitable for summary display."""
+    return isinstance(value, (str, int, float, bool))
+
+
+def _render_table(headers: List[str], rows: List[List[Any]]) -> str:
+    head = "| " + " | ".join(headers) + " |"
+    sep = "| " + " | ".join(["---"] * len(headers)) + " |"
+    body = ["| " + " | ".join(str(v) for v in row) + " |" for row in rows] if rows else []
+    if not body:
+        body = ["| " + " | ".join(["-"] * len(headers)) + " |"]
+    return "\n".join([head, sep] + body)
+
+
+def _is_empty_metric(value: Any) -> bool:
+    """Return True when a rendered metric is effectively empty."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() in {"-", "unknown", "", "- / -", "-/-"}
+    return False
+
+
+def _filter_all_empty_columns(
+    headers: List[str],
+    rows: List[List[Any]],
+    keep_indices: List[int],
+) -> Tuple[List[str], List[List[Any]]]:
+    """Drop columns whose values are empty across all rows."""
+    if not rows:
+        return headers, rows
+    keep = set(keep_indices)
+    for col_ix in range(len(headers)):
+        if col_ix in keep:
+            continue
+        if any(not _is_empty_metric(row[col_ix]) for row in rows):
+            keep.add(col_ix)
+    kept = [ix for ix in range(len(headers)) if ix in keep]
+    return [headers[ix] for ix in kept], [[row[ix] for ix in kept] for row in rows]
+
+
+def _flatten_dict(prefix: str, value: Any, out: Dict[str, Any]) -> None:
+    """Flatten nested dict values into dotted keys."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            child = f"{prefix}.{k}" if prefix else str(k)
+            _flatten_dict(child, v, out)
+        return
+    out[prefix] = value
+
+
+def _safe_sample(value: Any, max_len: int = 80) -> str:
+    """Render a compact sanitized example value."""
+    safe = sanitize_json_like(value)
+    text = str(safe)
+    if len(text) > max_len:
+        return text[: max_len - 3] + "..."
+    return text
+
+
+def _percentile(sorted_vals: List[float], pct: float) -> float:
+    """Compute percentile from a sorted list using nearest-rank interpolation."""
+    if not sorted_vals:
+        return math.nan
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    idx = (len(sorted_vals) - 1) * pct
+    lo = int(math.floor(idx))
+    hi = int(math.ceil(idx))
+    if lo == hi:
+        return sorted_vals[lo]
+    frac = idx - lo
+    return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
+
+
+def _iqr_bounds(values: List[float]) -> Tuple[Optional[float], Optional[float]]:
+    """Return IQR lower/upper bounds for outlier detection."""
+    if len(values) < 4:
+        return None, None
+    sorted_vals = sorted(values)
+    q1 = _percentile(sorted_vals, 0.25)
+    q3 = _percentile(sorted_vals, 0.75)
+    iqr = q3 - q1
+    return q1 - 1.5 * iqr, q3 + 1.5 * iqr
+
+
+def _summarize_field_values(values: List[Any], total_runs: int) -> str:
+    """Summarize flattened field values across multiple activity runs."""
+    present = len(values)
+    presence = f"{(present / total_runs) * 100:.1f}%"
+
+    numeric_vals = [as_float(v) for v in values]
+    numeric_vals = [v for v in numeric_vals if v is not None]
+    if numeric_vals and len(numeric_vals) == len(values):
+        numeric_vals.sort()
+        p50 = _percentile(numeric_vals, 0.50)
+        p95 = _percentile(numeric_vals, 0.95)
+        return (
+            f"presence={presence}; type=numeric; min={numeric_vals[0]:.3f}; "
+            f"p50={p50:.3f}; p95={p95:.3f}; max={numeric_vals[-1]:.3f}"
+        )
+
+    shape_counter: Counter[str] = Counter()
+    scalar_counter: Counter[str] = Counter()
+    for v in values:
+        if isinstance(v, (list, tuple)) and v and all(isinstance(x, int) for x in v):
+            shape_counter[str(list(v))] += 1
+        elif isinstance(v, (str, int, float, bool)):
+            scalar_counter[_safe_sample(v, max_len=40)] += 1
+
+    if shape_counter:
+        top = ", ".join(f"{k} ({c})" for k, c in shape_counter.most_common(2))
+        return f"presence={presence}; type=shape-like; top_shapes={top}"
+    if scalar_counter:
+        top = ", ".join(f"{k} ({c})" for k, c in scalar_counter.most_common(3))
+        return f"presence={presence}; type=scalar/categorical; top_values={top}"
+
+    return f"presence={presence}; type=mixed; sample={_safe_sample(values[0])}"
+
+
+def _build_activity_io_summary(tasks_sorted: List[Dict[str, Any]]) -> List[str]:
+    """Build markdown lines for aggregated used/generated summaries by activity."""
+    by_activity: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for task in tasks_sorted:
+        by_activity[_to_str(task.get("activity_id"))].append(task)
+
+    lines: List[str] = ["## Per Activity Details"]
+    activity_used_field_counts: List[Tuple[str, int]] = []
+    activity_generated_field_counts: List[Tuple[str, int]] = []
+    variability_candidates: List[Tuple[str, str, float]] = []
+    for activity, members in by_activity.items():
+        n_runs = len(members)
+        lines.append(f"- **{activity}** (`n={n_runs}`)")
+
+        used_fields: Dict[str, List[Any]] = defaultdict(list)
+        gen_fields: Dict[str, List[Any]] = defaultdict(list)
+        for task in members:
+            used = task.get("used", {})
+            generated = task.get("generated", {})
+            if isinstance(used, dict):
+                flat: Dict[str, Any] = {}
+                _flatten_dict("", used, flat)
+                for k, v in flat.items():
+                    used_fields[k].append(v)
+            if isinstance(generated, dict):
+                flat = {}
+                _flatten_dict("", generated, flat)
+                for k, v in flat.items():
+                    gen_fields[k].append(v)
+
+        if used_fields:
+            lines.append("  - Used (aggregated):")
+            activity_used_field_counts.append((activity, len(used_fields)))
+            for key in sorted(used_fields.keys())[:8]:
+                lines.append(f"    - `{key}`: {_summarize_field_values(used_fields[key], n_runs)}")
+                numeric_vals = [as_float(v) for v in used_fields[key]]
+                numeric_vals = [v for v in numeric_vals if v is not None]
+                if numeric_vals and len(numeric_vals) == len(used_fields[key]):
+                    variability_candidates.append((activity, f"used.{key}", max(numeric_vals) - min(numeric_vals)))
+        if gen_fields:
+            lines.append("  - Generated (aggregated):")
+            activity_generated_field_counts.append((activity, len(gen_fields)))
+            for key in sorted(gen_fields.keys())[:8]:
+                lines.append(f"    - `{key}`: {_summarize_field_values(gen_fields[key], n_runs)}")
+                numeric_vals = [as_float(v) for v in gen_fields[key]]
+                numeric_vals = [v for v in numeric_vals if v is not None]
+                if numeric_vals and len(numeric_vals) == len(gen_fields[key]):
+                    variability_candidates.append((activity, f"generated.{key}", max(numeric_vals) - min(numeric_vals)))
+        if not used_fields and not gen_fields:
+            lines.append("  - No used/generated dict fields to summarize.")
+    lines.append("")
+    lines.append("### Interpretation & Insights")
+    if activity_used_field_counts:
+        top_used = sorted(activity_used_field_counts, key=lambda x: x[1], reverse=True)[:3]
+        lines.append(
+            "- Activities with richest **used** metadata: " + ", ".join(f"`{a}` ({n} fields)" for a, n in top_used)
+        )
+    if activity_generated_field_counts:
+        top_gen = sorted(activity_generated_field_counts, key=lambda x: x[1], reverse=True)[:3]
+        lines.append(
+            "- Activities with richest **generated** metadata: " + ", ".join(f"`{a}` ({n} fields)" for a, n in top_gen)
+        )
+    if variability_candidates:
+        top_var = sorted(variability_candidates, key=lambda x: x[2], reverse=True)[:5]
+        lines.append(
+            "- Highest numeric variability fields: " + ", ".join(f"`{a}:{f}` (range={v:.3f})" for a, f, v in top_var)
+        )
+    if not activity_used_field_counts and not activity_generated_field_counts:
+        lines.append("- No structured used/generated metadata was available for insight extraction.")
+    lines.append("")
+    return lines
+
+
+def _iter_saved_files(tasks: Iterable[Dict[str, Any]]) -> List[str]:
+    saved_files: List[str] = []
+    for task in tasks:
+        cmeta = task.get("custom_metadata", {})
+        if not isinstance(cmeta, dict):
+            continue
+        meta = cmeta.get("metadata", {})
+        if not isinstance(meta, dict):
+            continue
+        vals = meta.get("saved_files")
+        if isinstance(vals, list):
+            saved_files.extend(str(v) for v in vals)
+    return sorted(set(saved_files))
+
+
+def _iter_input_output_paths(tasks: Iterable[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
+    inputs = set()
+    outputs = set()
+    for task in tasks:
+        used = task.get("used", {})
+        if not isinstance(used, dict):
+            continue
+        in_path = used.get("input_path")
+        out_dir = used.get("output_dir")
+        if isinstance(in_path, str) and in_path.strip():
+            inputs.add(in_path.strip())
+        if isinstance(out_dir, str) and out_dir.strip():
+            outputs.add(out_dir.strip())
+    return sorted(inputs), sorted(outputs)
+
+
+def _deep_get(d: Dict[str, Any], path: List[str]) -> Any:
+    cur: Any = d
+    for key in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _delta(a: Any, b: Any) -> Optional[float]:
+    af = as_float(a)
+    bf = as_float(b)
+    if af is None or bf is None:
+        return None
+    diff = bf - af
+    return diff if diff > 0 else None
+
+
+def _compute_telemetry_delta(start: Dict[str, Any], end: Dict[str, Any]) -> Dict[str, Any]:
+    cpu_start = _deep_get(start, ["cpu"]) or {}
+    cpu_end = _deep_get(end, ["cpu"]) or {}
+    cpu_times_start = _deep_get(cpu_start, ["times_avg"]) or {}
+    cpu_times_end = _deep_get(cpu_end, ["times_avg"]) or {}
+
+    disk_start = _deep_get(start, ["disk"]) or {}
+    disk_end = _deep_get(end, ["disk"]) or {}
+    io_start = _deep_get(disk_start, ["io_sum"]) or {}
+    io_end = _deep_get(disk_end, ["io_sum"]) or {}
+
+    mem_start = _deep_get(start, ["memory", "virtual"]) or {}
+    mem_end = _deep_get(end, ["memory", "virtual"]) or {}
+
+    return {
+        "cpu_user": _delta(cpu_times_start.get("user"), cpu_times_end.get("user")),
+        "cpu_system": _delta(cpu_times_start.get("system"), cpu_times_end.get("system")),
+        "cpu_percent": _delta(cpu_start.get("percent_all"), cpu_end.get("percent_all")),
+        "memory_used": _delta(mem_start.get("used"), mem_end.get("used")),
+        "read_bytes": _delta(io_start.get("read_bytes"), io_end.get("read_bytes")),
+        "write_bytes": _delta(io_start.get("write_bytes"), io_end.get("write_bytes")),
+        "read_count": _delta(io_start.get("read_count"), io_end.get("read_count")),
+        "write_count": _delta(io_start.get("write_count"), io_end.get("write_count")),
+    }
+
+
+def _flatten_numeric(prefix: str, value: Any, out: Dict[str, float]) -> None:
+    """Flatten nested dict/list numeric telemetry values into dotted paths."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            child = f"{prefix}.{k}" if prefix else str(k)
+            _flatten_numeric(child, v, out)
+        return
+    if isinstance(value, list):
+        for i, v in enumerate(value):
+            child = f"{prefix}[{i}]"
+            _flatten_numeric(child, v, out)
+        return
+    val = as_float(value)
+    if val is not None:
+        out[prefix] = val
+
+
+def _extract_telemetry_overview(tasks_sorted: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate telemetry metrics with graceful fallbacks across all tasks."""
+    rows = []
+    end_cpu_freq = []
+    end_mem_percent = []
+    end_swap_percent = []
+    end_proc_threads = []
+    end_proc_fds = []
+    end_proc_open_files = []
+    end_proc_conns = []
+    end_proc_rss = []
+    end_proc_vms = []
+    gpu_names = set()
+    gpu_ids = set()
+    gpu_metric_deltas: Dict[str, float] = defaultdict(float)
+    gpu_temp_peaks: Dict[str, float] = {}
+    network_end_metrics: Dict[str, float] = defaultdict(float)
+
+    totals = defaultdict(float)
+
+    for task in tasks_sorted:
+        start = task.get("telemetry_at_start", {}) if isinstance(task.get("telemetry_at_start"), dict) else {}
+        end = task.get("telemetry_at_end", {}) if isinstance(task.get("telemetry_at_end"), dict) else {}
+        if not start and not end:
+            continue
+        rows.append((start, end))
+        delta = _compute_telemetry_delta(start, end)
+        totals["cpu_user"] += delta["cpu_user"] or 0.0
+        totals["cpu_system"] += delta["cpu_system"] or 0.0
+        totals["memory_used"] += delta["memory_used"] or 0.0
+        totals["read_bytes"] += delta["read_bytes"] or 0.0
+        totals["write_bytes"] += delta["write_bytes"] or 0.0
+        totals["read_count"] += delta["read_count"] or 0.0
+        totals["write_count"] += delta["write_count"] or 0.0
+        if delta["cpu_percent"] is not None:
+            totals["cpu_percent_sum"] += delta["cpu_percent"]
+            totals["cpu_percent_n"] += 1
+
+        end_cpu = end.get("cpu", {}) if isinstance(end.get("cpu"), dict) else {}
+        cpu_freq = as_float(end_cpu.get("frequency"))
+        if cpu_freq is not None:
+            end_cpu_freq.append(cpu_freq)
+
+        end_mem = end.get("memory", {}) if isinstance(end.get("memory"), dict) else {}
+        end_virtual = end_mem.get("virtual", {}) if isinstance(end_mem.get("virtual"), dict) else {}
+        end_swap = end_mem.get("swap", {}) if isinstance(end_mem.get("swap"), dict) else {}
+        vm_percent = as_float(end_virtual.get("percent"))
+        if vm_percent is not None:
+            end_mem_percent.append(vm_percent)
+        sw_percent = as_float(end_swap.get("percent"))
+        if sw_percent is not None:
+            end_swap_percent.append(sw_percent)
+        totals["swap_used"] += (
+            _delta(
+                _deep_get(start, ["memory", "swap", "used"]),
+                _deep_get(end, ["memory", "swap", "used"]),
+            )
+            or 0.0
+        )
+        totals["disk_used"] += (
+            _delta(
+                _deep_get(start, ["disk", "disk_usage", "used"]),
+                _deep_get(end, ["disk", "disk_usage", "used"]),
+            )
+            or 0.0
+        )
+        totals["disk_percent"] += (
+            _delta(
+                _deep_get(start, ["disk", "disk_usage", "percent"]),
+                _deep_get(end, ["disk", "disk_usage", "percent"]),
+            )
+            or 0.0
+        )
+
+        for key in ["read_time", "write_time", "busy_time"]:
+            totals[f"disk_{key}"] += (
+                _delta(
+                    _deep_get(start, ["disk", "io_sum", key]),
+                    _deep_get(end, ["disk", "io_sum", key]),
+                )
+                or 0.0
+            )
+
+        for key in [
+            "bytes_sent",
+            "bytes_recv",
+            "packets_sent",
+            "packets_recv",
+            "errin",
+            "errout",
+            "dropin",
+            "dropout",
+        ]:
+            value = _delta(
+                _deep_get(start, ["network", "netio_sum", key]),
+                _deep_get(end, ["network", "netio_sum", key]),
+            )
+            if value is not None:
+                totals[f"net_{key}"] += value
+            end_val = as_float(_deep_get(end, ["network", "netio_sum", key]))
+            if end_val is not None:
+                network_end_metrics[key] = max(network_end_metrics[key], end_val)
+
+        totals["proc_cpu_user"] += (
+            _delta(
+                _deep_get(start, ["process", "cpu_times", "user"]),
+                _deep_get(end, ["process", "cpu_times", "user"]),
+            )
+            or 0.0
+        )
+        totals["proc_cpu_system"] += (
+            _delta(
+                _deep_get(start, ["process", "cpu_times", "system"]),
+                _deep_get(end, ["process", "cpu_times", "system"]),
+            )
+            or 0.0
+        )
+        totals["proc_read_bytes"] += (
+            _delta(
+                _deep_get(start, ["process", "io_counters", "read_bytes"]),
+                _deep_get(end, ["process", "io_counters", "read_bytes"]),
+            )
+            or 0.0
+        )
+        totals["proc_write_bytes"] += (
+            _delta(
+                _deep_get(start, ["process", "io_counters", "write_bytes"]),
+                _deep_get(end, ["process", "io_counters", "write_bytes"]),
+            )
+            or 0.0
+        )
+        totals["proc_read_count"] += (
+            _delta(
+                _deep_get(start, ["process", "io_counters", "read_count"]),
+                _deep_get(end, ["process", "io_counters", "read_count"]),
+            )
+            or 0.0
+        )
+        totals["proc_write_count"] += (
+            _delta(
+                _deep_get(start, ["process", "io_counters", "write_count"]),
+                _deep_get(end, ["process", "io_counters", "write_count"]),
+            )
+            or 0.0
+        )
+        proc_cpu_pct = _delta(
+            _deep_get(start, ["process", "cpu_percent"]),
+            _deep_get(end, ["process", "cpu_percent"]),
+        )
+        if proc_cpu_pct is not None:
+            totals["proc_cpu_percent_sum"] += proc_cpu_pct
+            totals["proc_cpu_percent_n"] += 1
+
+        for collection, path in [
+            (end_proc_threads, ["process", "num_threads"]),
+            (end_proc_fds, ["process", "num_open_file_descriptors"]),
+            (end_proc_open_files, ["process", "num_open_files"]),
+            (end_proc_conns, ["process", "num_connections"]),
+            (end_proc_rss, ["process", "memory", "rss"]),
+            (end_proc_vms, ["process", "memory", "vms"]),
+        ]:
+            val = as_float(_deep_get(end, path))
+            if val is not None:
+                collection.append(val)
+
+        start_gpu = start.get("gpu", {}) if isinstance(start.get("gpu"), dict) else {}
+        end_gpu = end.get("gpu", {}) if isinstance(end.get("gpu"), dict) else {}
+        for gpu_key, gpu_end in end_gpu.items():
+            if not isinstance(gpu_end, dict):
+                continue
+            gpu_name = gpu_end.get("name")
+            if gpu_name:
+                gpu_names.add(str(gpu_name))
+            gpu_id = gpu_end.get("id")
+            if gpu_id:
+                gpu_ids.add(str(gpu_id))
+            numeric_end: Dict[str, float] = {}
+            _flatten_numeric("", gpu_end, numeric_end)
+            gpu_start = start_gpu.get(gpu_key, {}) if isinstance(start_gpu.get(gpu_key), dict) else {}
+            numeric_start: Dict[str, float] = {}
+            _flatten_numeric("", gpu_start, numeric_start)
+            for metric, val_end in numeric_end.items():
+                val_start = numeric_start.get(metric)
+                if val_start is not None and val_end >= val_start:
+                    gpu_metric_deltas[metric] += val_end - val_start
+                elif metric not in gpu_metric_deltas:
+                    gpu_metric_deltas[metric] += val_end
+                lower_metric = metric.lower()
+                if "temperature" in lower_metric or "hotspot" in lower_metric or "edge" in lower_metric:
+                    gpu_temp_peaks[metric] = max(gpu_temp_peaks.get(metric, float("-inf")), val_end)
+
+    n_rows = len(rows)
+    return {
+        "rows": n_rows,
+        "cpu_user": totals["cpu_user"] if n_rows else None,
+        "cpu_system": totals["cpu_system"] if n_rows else None,
+        "cpu_percent_avg": (totals["cpu_percent_sum"] / totals["cpu_percent_n"]) if totals["cpu_percent_n"] else None,
+        "cpu_freq_avg": (sum(end_cpu_freq) / len(end_cpu_freq)) if end_cpu_freq else None,
+        "memory_used": totals["memory_used"] if n_rows else None,
+        "memory_percent_avg": (sum(end_mem_percent) / len(end_mem_percent)) if end_mem_percent else None,
+        "swap_used": totals["swap_used"] if n_rows else None,
+        "swap_percent_avg": (sum(end_swap_percent) / len(end_swap_percent)) if end_swap_percent else None,
+        "disk_used": totals["disk_used"] if n_rows else None,
+        "disk_percent_total": totals["disk_percent"] if n_rows else None,
+        "read_bytes": totals["read_bytes"] if n_rows else None,
+        "write_bytes": totals["write_bytes"] if n_rows else None,
+        "read_count": totals["read_count"] if n_rows else None,
+        "write_count": totals["write_count"] if n_rows else None,
+        "disk_read_time": totals["disk_read_time"] if n_rows else None,
+        "disk_write_time": totals["disk_write_time"] if n_rows else None,
+        "disk_busy_time": totals["disk_busy_time"] if n_rows else None,
+        "network": totals,
+        "network_end_metrics": dict(network_end_metrics),
+        "proc_cpu_user": totals["proc_cpu_user"] if n_rows else None,
+        "proc_cpu_system": totals["proc_cpu_system"] if n_rows else None,
+        "proc_cpu_percent_avg": (
+            totals["proc_cpu_percent_sum"] / totals["proc_cpu_percent_n"] if totals["proc_cpu_percent_n"] else None
+        ),
+        "proc_read_bytes": totals["proc_read_bytes"] if n_rows else None,
+        "proc_write_bytes": totals["proc_write_bytes"] if n_rows else None,
+        "proc_read_count": totals["proc_read_count"] if n_rows else None,
+        "proc_write_count": totals["proc_write_count"] if n_rows else None,
+        "proc_threads_max": max(end_proc_threads) if end_proc_threads else None,
+        "proc_open_fds_max": max(end_proc_fds) if end_proc_fds else None,
+        "proc_open_files_max": max(end_proc_open_files) if end_proc_open_files else None,
+        "proc_connections_max": max(end_proc_conns) if end_proc_conns else None,
+        "proc_rss_max": max(end_proc_rss) if end_proc_rss else None,
+        "proc_vms_max": max(end_proc_vms) if end_proc_vms else None,
+        "gpu_names": sorted(gpu_names),
+        "gpu_ids": sorted(gpu_ids),
+        "gpu_metric_deltas": dict(gpu_metric_deltas),
+        "gpu_temp_peaks": gpu_temp_peaks,
+    }
+
+
+def _render_pipeline_structure(
+    tasks_sorted: List[Dict[str, Any]],
+    input_paths: List[str],
+    output_paths: List[str],
+    saved_files: List[str],
+) -> str:
+    input_path = input_paths[0] if input_paths else " input data"
+    output_path = saved_files[0] if saved_files else (output_paths[-1] if output_paths else " output data")
+
+    rail = "        │"
+    down = "        ▼"
+    lines = [input_path, rail, down]
+    if not tasks_sorted:
+        lines.extend([down, output_path])
+    else:
+        for i, task in enumerate(tasks_sorted):
+            lines.append(f" {_to_str(task.get('activity_id'))}")
+            if i < len(tasks_sorted) - 1:
+                lines.append(rail)
+        lines.append(down)
+        lines.append(output_path)
+
+    return "## Workflow Structure\n\n```text\n" + "\n".join(lines) + "\n```"
+
+
+def _timing_insights(tasks_sorted: List[Dict[str, Any]]) -> List[str]:
+    """Generate interpretation lines for timing report."""
+    elapsed_rows: List[Tuple[str, float]] = []
+    for t in tasks_sorted:
+        e = elapsed_seconds(t.get("started_at"), t.get("ended_at"))
+        if e is not None:
+            elapsed_rows.append((_to_str(t.get("activity_id")), e))
+    lines = ["### Interpretation & Insights"]
+    if not elapsed_rows:
+        lines.append("- No valid elapsed timings were available.")
+        return lines
+    slowest = sorted(elapsed_rows, key=lambda x: x[1], reverse=True)[:5]
+    fastest = sorted(elapsed_rows, key=lambda x: x[1])[:3]
+    lines.append("- Slowest activities: " + ", ".join(f"`{a}` ({v:.3f}s)" for a, v in slowest))
+    lines.append("- Fastest activities: " + ", ".join(f"`{a}` ({v:.3f}s)" for a, v in fastest))
+    vals = [v for _, v in elapsed_rows]
+    lo, hi = _iqr_bounds(vals)
+    if lo is not None and hi is not None:
+        outliers = [(a, v) for a, v in elapsed_rows if v < lo or v > hi]
+        if outliers:
+            top_outliers = sorted(outliers, key=lambda x: x[1], reverse=True)[:5]
+            lines.append("- Timing outliers (IQR rule): " + ", ".join(f"`{a}` ({v:.3f}s)" for a, v in top_outliers))
+        else:
+            lines.append("- Timing outliers (IQR rule): none detected.")
+    return lines
+
+
+def render_provenance_card_markdown(
+    dataset: Dict[str, Any],
+    transformations: List[Dict[str, Any]],
+    object_summary: Dict[str, Any],
+    output_path: Path,
+) -> Dict[str, Any]:
+    """Render a summarized provenance-card markdown file."""
+    workflow = dataset.get("workflow", {}) if isinstance(dataset.get("workflow"), dict) else {}
+    tasks = dataset.get("tasks", []) if isinstance(dataset.get("tasks"), list) else []
+    tasks_sorted = sorted(tasks, key=lambda t: as_float(t.get("started_at")) or float("inf"))
+
+    starts = [as_float(t.get("started_at")) for t in tasks if as_float(t.get("started_at")) is not None]
+    ends = [as_float(t.get("ended_at")) for t in tasks if as_float(t.get("ended_at")) is not None]
+    min_start = min(starts) if starts else None
+    max_end = max(ends) if ends else None
+    total_elapsed = (max_end - min_start) if (min_start is not None and max_end is not None) else None
+
+    workflow_name = str(workflow.get("name", "unknown"))
+    workflow_id = str(workflow.get("workflow_id", "unknown"))
+    campaign_id = str(workflow.get("campaign_id", "unknown"))
+    if workflow_name == "unknown" and workflow_id != "unknown":
+        workflow_name = workflow_id
+
+    status_counts: Dict[str, int] = {}
+    for row in transformations:
+        for status, count in row["status_counts"].items():
+            status_counts[status] = status_counts.get(status, 0) + int(count)
+
+    timing_rows = []
+    for task in tasks_sorted:
+        timing_rows.append(
+            [
+                _to_str(task.get("activity_id")),
+                _to_str(task.get("status")),
+                fmt_timestamp_utc(task.get("started_at")),
+                fmt_timestamp_utc(task.get("ended_at")),
+                _fmt_seconds(elapsed_seconds(task.get("started_at"), task.get("ended_at"))),
+            ]
+        )
+
+    top_slowest = sorted(
+        [
+            (_to_str(t.get("activity_id")), elapsed_seconds(t.get("started_at"), t.get("ended_at")))
+            for t in tasks_sorted
+        ],
+        key=lambda x: x[1] if x[1] is not None else -1,
+        reverse=True,
+    )[:5]
+
+    telemetry_available = any(
+        isinstance(t.get("telemetry_at_start"), dict) and isinstance(t.get("telemetry_at_end"), dict)
+        for t in tasks_sorted
+    )
+    resource_rows: List[List[Any]] = []
+    io_heavy: List[Tuple[str, float, float]] = []
+    cpu_heavy: List[Tuple[str, float]] = []
+    mem_heavy: List[Tuple[str, float]] = []
+    process_cpu_heavy: List[Tuple[str, float]] = []
+    network_heavy: List[Tuple[str, float, float]] = []
+    gpu_heavy: List[Tuple[str, float]] = []
+    total_mem = 0.0
+    total_read = 0.0
+    total_write = 0.0
+    total_read_ops = 0.0
+    total_write_ops = 0.0
+    cpu_values: List[float] = []
+
+    if telemetry_available:
+        for task in tasks_sorted:
+            start = task.get("telemetry_at_start", {}) if isinstance(task.get("telemetry_at_start"), dict) else {}
+            end = task.get("telemetry_at_end", {}) if isinstance(task.get("telemetry_at_end"), dict) else {}
+            delta = _compute_telemetry_delta(start, end)
+            total_mem += delta["memory_used"] or 0.0
+            total_read += delta["read_bytes"] or 0.0
+            total_write += delta["write_bytes"] or 0.0
+            total_read_ops += delta["read_count"] or 0.0
+            total_write_ops += delta["write_count"] or 0.0
+            if delta["cpu_percent"] is not None:
+                cpu_values.append(delta["cpu_percent"])
+            io_heavy.append((_to_str(task.get("activity_id")), delta["read_bytes"] or 0.0, delta["write_bytes"] or 0.0))
+            cpu_heavy.append((_to_str(task.get("activity_id")), delta["cpu_percent"] or 0.0))
+            mem_heavy.append((_to_str(task.get("activity_id")), delta["memory_used"] or 0.0))
+            process_cpu = (
+                _delta(
+                    _deep_get(start, ["process", "cpu_percent"]),
+                    _deep_get(end, ["process", "cpu_percent"]),
+                )
+                or 0.0
+            )
+            process_cpu_heavy.append((_to_str(task.get("activity_id")), process_cpu))
+            net_sent = (
+                _delta(
+                    _deep_get(start, ["network", "netio_sum", "bytes_sent"]),
+                    _deep_get(end, ["network", "netio_sum", "bytes_sent"]),
+                )
+                or 0.0
+            )
+            net_recv = (
+                _delta(
+                    _deep_get(start, ["network", "netio_sum", "bytes_recv"]),
+                    _deep_get(end, ["network", "netio_sum", "bytes_recv"]),
+                )
+                or 0.0
+            )
+            network_heavy.append((_to_str(task.get("activity_id")), net_sent, net_recv))
+            task_gpu_delta = 0.0
+            start_gpu = start.get("gpu", {}) if isinstance(start.get("gpu"), dict) else {}
+            end_gpu = end.get("gpu", {}) if isinstance(end.get("gpu"), dict) else {}
+            for gpu_key, gpu_end in end_gpu.items():
+                if not isinstance(gpu_end, dict):
+                    continue
+                flat_end: Dict[str, float] = {}
+                _flatten_numeric("", gpu_end, flat_end)
+                flat_start: Dict[str, float] = {}
+                gpu_start = start_gpu.get(gpu_key, {}) if isinstance(start_gpu.get(gpu_key), dict) else {}
+                _flatten_numeric("", gpu_start, flat_start)
+                for metric, v_end in flat_end.items():
+                    if "used" not in metric.lower() or "gpu" in metric.lower():
+                        continue
+                    v_start = flat_start.get(metric)
+                    if v_start is not None and v_end >= v_start:
+                        task_gpu_delta += v_end - v_start
+                    else:
+                        task_gpu_delta += v_end
+            gpu_heavy.append((_to_str(task.get("activity_id")), task_gpu_delta))
+
+            resource_rows.append(
+                [
+                    _to_str(task.get("activity_id")),
+                    _fmt_seconds(elapsed_seconds(task.get("started_at"), task.get("ended_at"))),
+                    _fmt_seconds(delta["cpu_user"]),
+                    _fmt_seconds(delta["cpu_system"]),
+                    _fmt_percent(delta["cpu_percent"]),
+                    _fmt_bytes(delta["memory_used"]),
+                    _fmt_bytes(delta["read_bytes"]),
+                    _fmt_bytes(delta["write_bytes"]),
+                    _fmt_count(delta["read_count"]),
+                    _fmt_count(delta["write_count"]),
+                ]
+            )
+
+        io_heavy.sort(key=lambda x: x[1] + x[2], reverse=True)
+        cpu_heavy.sort(key=lambda x: x[1], reverse=True)
+        mem_heavy.sort(key=lambda x: x[1], reverse=True)
+        process_cpu_heavy.sort(key=lambda x: x[1], reverse=True)
+        network_heavy.sort(key=lambda x: x[1] + x[2], reverse=True)
+        gpu_heavy.sort(key=lambda x: x[1], reverse=True)
+    avg_cpu = (sum(cpu_values) / len(cpu_values)) if cpu_values else None
+    telemetry_overview = _extract_telemetry_overview(tasks_sorted) if telemetry_available else {}
+
+    input_paths, output_paths = _iter_input_output_paths(tasks_sorted)
+    saved_files = _iter_saved_files(tasks_sorted)
+
+    code_repo = workflow.get("code_repository", {}) if isinstance(workflow.get("code_repository"), dict) else {}
+    code_repo_text = (
+        f"branch={_to_str(code_repo.get('branch'))}, "
+        f"short_sha={_to_str(code_repo.get('short_sha'))}, "
+        f"dirty={_to_str(code_repo.get('dirty'))}"
+    )
+
+    lines: List[str] = []
+    lines.append(f"# Workflow Provenance Card: {workflow_name}")
+    lines.append("")
+    lines.append("## Summary")
+    lines.append(f"- **Workflow Name:** `{workflow_name}`")
+    lines.append(f"- **Workflow ID:** `{workflow_id}`")
+    lines.append(f"- **Campaign ID:** `{campaign_id}`")
+    lines.append(f"- **Execution Start (UTC):** `{fmt_timestamp_utc(min_start)}`")
+    lines.append(f"- **Execution End (UTC):** `{fmt_timestamp_utc(max_end)}`")
+    lines.append(f"- **Total Elapsed (s):** `{_fmt_seconds(total_elapsed)}`")
+    lines.append(f"- **User:** `{_to_str(workflow.get('user'))}`")
+    lines.append(f"- **System Name:** `{_to_str(workflow.get('sys_name'))}`")
+    lines.append(f"- **Environment ID:** `{_to_str(workflow.get('environment_id'))}`")
+    lines.append(f"- **Code Repository:** `{code_repo_text}`")
+    lines.append(f"- **Git Remote:** `{_to_str(code_repo.get('remote'))}`")
+    workflow_args = workflow.get("used", {}) if isinstance(workflow.get("used"), dict) else {}
+    simple_workflow_args = []
+    for key in sorted(workflow_args.keys()):
+        value = workflow_args.get(key)
+        if _is_simple_value(value):
+            simple_workflow_args.append((key, value))
+    if simple_workflow_args:
+        lines.append("- **Workflow args:**")
+        for key, value in simple_workflow_args:
+            lines.append(f"  <br> `{key}`: `{value}`")
+    if input_paths:
+        lines.append(f"- **Input Paths:** `{input_paths}`")
+    if output_paths:
+        lines.append(f"- **Output Directories:** `{output_paths}`")
+    if saved_files:
+        lines.append(f"- **Saved Files:** `{saved_files}`")
+    lines.append("")
+
+    lines.append("## Workflow-level Summary")
+    lines.append(f"- **Total Activities:** `{len(transformations)}`")
+    lines.append(f"- **Status Counts:** `{status_counts}`")
+    lines.append(f"- **Total Elapsed Workflow Time (s):** `{_fmt_seconds(total_elapsed)}`")
+    slowest_items = [(name, sec) for name, sec in top_slowest if sec is not None]
+    if len(transformations) > 5 and slowest_items:
+        lines.append("- **Top 5 Slowest Activities:**")
+    for name, sec in slowest_items:
+        lines.append(f"  - `{name}`: `{_fmt_seconds(sec)} s`")
+    if telemetry_available:
+        lines.append("- **Resource Totals:**")
+        lines.append(f"  - `Memory Used`: `{_fmt_bytes(total_mem)}`")
+        lines.append(f"  - `Average CPU (%)`: `{_fmt_percent(avg_cpu)}`")
+        lines.append("  - **IO:**")
+        lines.append(f"    - `Read`: `{_fmt_bytes(total_read)}`")
+        lines.append(f"    - `Write`: `{_fmt_bytes(total_write)}`")
+        lines.append(f"    - `Read Ops`: `{_fmt_count(total_read_ops)}`")
+        lines.append(f"    - `Write Ops`: `{_fmt_count(total_write_ops)}`")
+        lines.append("- **Key Observations:**")
+        if top_slowest and top_slowest[0][1] is not None:
+            lines.append(f"  - Slowest Activity: `{top_slowest[0][0]}` at `{_fmt_seconds(top_slowest[0][1])} s`")
+        if io_heavy:
+            top_io = io_heavy[0]
+            lines.append(
+                "  - Largest IO Activity: "
+                f"`{top_io[0]}` with Read `{_fmt_bytes(top_io[1])}` "
+                f"and Write `{_fmt_bytes(top_io[2])}`"
+            )
+    lines.append("")
+
+    lines.append(_render_pipeline_structure(tasks_sorted, input_paths, output_paths, saved_files))
+    lines.append("")
+
+    lines.append("## Timing Report")
+    lines.append("Rows are sorted by **Started At** (ascending).")
+    lines.append("")
+    lines.append(
+        _render_table(
+            ["Activity", "Status", "Started At", "Ended At", "Elapsed (s)"],
+            timing_rows,
+        )
+    )
+    lines.append("")
+    lines.extend(_timing_insights(tasks_sorted))
+    lines.append("")
+    lines.extend(_build_activity_io_summary(tasks_sorted))
+
+    if telemetry_available:
+        lines.append("## Workflow-level Resource Usage")
+        gpu_device_count = len(telemetry_overview.get("gpu_names", [])) or len(telemetry_overview.get("gpu_ids", []))
+        peak_gpu_temp = None
+        if telemetry_overview.get("gpu_temp_peaks"):
+            peak_gpu_temp = max(telemetry_overview["gpu_temp_peaks"].values())
+        gpu_used_delta = None
+        gpu_power_delta = None
+        if telemetry_overview.get("gpu_metric_deltas"):
+            used_values = [
+                v
+                for k, v in telemetry_overview["gpu_metric_deltas"].items()
+                if "used" in k.lower() and "gpu" not in k.lower()
+            ]
+            power_values = [v for k, v in telemetry_overview["gpu_metric_deltas"].items() if "power" in k.lower()]
+            gpu_used_delta = sum(used_values) if used_values else None
+            gpu_power_delta = sum(power_values) if power_values else None
+
+        net_metrics = telemetry_overview.get("network", {})
+        net_err_in = _fmt_count(net_metrics.get("net_errin"))
+        net_err_out = _fmt_count(net_metrics.get("net_errout"))
+        net_drop_in = _fmt_count(net_metrics.get("net_dropin"))
+        net_drop_out = _fmt_count(net_metrics.get("net_dropout"))
+        gpu_names = telemetry_overview.get("gpu_names", [])
+        gpu_ids = telemetry_overview.get("gpu_ids", [])
+        gpu_names_text = ", ".join(gpu_names) if gpu_names else "-"
+        gpu_ids_text = ", ".join(gpu_ids) if gpu_ids else "-"
+
+        workflow_resource_rows = [
+            ["Telemetry Samples (task start/end pairs)", telemetry_overview.get("rows", 0)],
+            ["CPU User Time Delta", _fmt_seconds(telemetry_overview.get("cpu_user"))],
+            ["CPU System Time Delta", _fmt_seconds(telemetry_overview.get("cpu_system"))],
+            ["Average CPU (%) Delta", _fmt_percent(telemetry_overview.get("cpu_percent_avg"))],
+            ["Average CPU Frequency", _fmt_count(telemetry_overview.get("cpu_freq_avg"))],
+            ["Memory Used Delta", _fmt_bytes(telemetry_overview.get("memory_used"))],
+            ["Average Memory (%)", _fmt_percent(telemetry_overview.get("memory_percent_avg"))],
+            ["Swap Used Delta", _fmt_bytes(telemetry_overview.get("swap_used"))],
+            ["Average Swap (%)", _fmt_percent(telemetry_overview.get("swap_percent_avg"))],
+            ["Disk Used Delta", _fmt_bytes(telemetry_overview.get("disk_used"))],
+            ["Disk Read Time Delta (ms)", _fmt_seconds(telemetry_overview.get("disk_read_time"))],
+            ["Disk Write Time Delta (ms)", _fmt_seconds(telemetry_overview.get("disk_write_time"))],
+            ["Disk Busy Time Delta (ms)", _fmt_seconds(telemetry_overview.get("disk_busy_time"))],
+            ["Network Sent", _fmt_bytes(net_metrics.get("net_bytes_sent"))],
+            ["Network Received", _fmt_bytes(net_metrics.get("net_bytes_recv"))],
+            ["Network Packets Sent", _fmt_count(net_metrics.get("net_packets_sent"))],
+            ["Network Packets Received", _fmt_count(net_metrics.get("net_packets_recv"))],
+            ["Network Errors In/Out", f"{net_err_in} / {net_err_out}"],
+            ["Network Drops In/Out", f"{net_drop_in} / {net_drop_out}"],
+            ["Process CPU User Delta (s)", _fmt_nonzero_seconds(telemetry_overview.get("proc_cpu_user"))],
+            ["Process CPU System Delta (s)", _fmt_nonzero_seconds(telemetry_overview.get("proc_cpu_system"))],
+            ["Process CPU (%) Delta", _fmt_percent(telemetry_overview.get("proc_cpu_percent_avg"))],
+            ["Process IO Read", _fmt_bytes(telemetry_overview.get("proc_read_bytes"))],
+            ["Process IO Write", _fmt_bytes(telemetry_overview.get("proc_write_bytes"))],
+            ["Process IO Read Ops", _fmt_count(telemetry_overview.get("proc_read_count"))],
+            ["Process IO Write Ops", _fmt_count(telemetry_overview.get("proc_write_count"))],
+            ["Process Max RSS", _fmt_bytes(telemetry_overview.get("proc_rss_max"))],
+            ["Process Max VMS", _fmt_bytes(telemetry_overview.get("proc_vms_max"))],
+            ["Process Max Threads", _fmt_count(telemetry_overview.get("proc_threads_max"))],
+            ["Process Max Open Files", _fmt_count(telemetry_overview.get("proc_open_files_max"))],
+            ["Process Max Open FDs", _fmt_count(telemetry_overview.get("proc_open_fds_max"))],
+            ["Process Max Connections", _fmt_count(telemetry_overview.get("proc_connections_max"))],
+            ["GPU Devices Seen", _fmt_count(gpu_device_count)],
+            ["GPU Names", gpu_names_text],
+            ["GPU IDs", gpu_ids_text],
+            ["GPU Used Delta", _fmt_bytes(gpu_used_delta)],
+            ["GPU Power Delta", f"{gpu_power_delta:.3f}" if gpu_power_delta is not None else "-"],
+            ["Peak GPU Temperature", f"{peak_gpu_temp:.3f}" if peak_gpu_temp is not None else "-"],
+        ]
+        workflow_resource_rows = [row for row in workflow_resource_rows if not _is_empty_metric(row[1])]
+        if workflow_resource_rows:
+            lines.append(_render_table(["Metric", "Value"], workflow_resource_rows))
+        else:
+            lines.append("- No workflow-level telemetry metrics were available.")
+        lines.append("")
+        lines.append("### Interpretation & Insights")
+        if not _is_empty_metric(_fmt_percent(telemetry_overview.get("cpu_percent_avg"))):
+            cpu_avg = _fmt_percent(telemetry_overview.get("cpu_percent_avg"))
+            lines.append(f"- CPU-heavy period (avg delta): `{cpu_avg}`.")
+        if not _is_empty_metric(_fmt_bytes(telemetry_overview.get("memory_used"))):
+            lines.append(
+                "- Memory pressure (delta): "
+                f"`{_fmt_bytes(telemetry_overview.get('memory_used'))}`; "
+                f"peak RSS: `{_fmt_bytes(telemetry_overview.get('proc_rss_max'))}`."
+            )
+        if not _is_empty_metric(_fmt_bytes(total_read)) or not _is_empty_metric(_fmt_bytes(total_write)):
+            lines.append(f"- Disk IO pressure: read `{_fmt_bytes(total_read)}`, write `{_fmt_bytes(total_write)}`.")
+        if not _is_empty_metric(_fmt_bytes(net_metrics.get("net_bytes_sent"))) or not _is_empty_metric(
+            _fmt_bytes(net_metrics.get("net_bytes_recv"))
+        ):
+            lines.append(
+                "- Network movement: sent "
+                f"`{_fmt_bytes(net_metrics.get('net_bytes_sent'))}`, received "
+                f"`{_fmt_bytes(net_metrics.get('net_bytes_recv'))}`."
+            )
+        if not _is_empty_metric(_fmt_seconds(telemetry_overview.get("proc_cpu_user"))) or not _is_empty_metric(
+            _fmt_seconds(telemetry_overview.get("proc_cpu_system"))
+        ):
+            lines.append(
+                "- Process-level pressure: "
+                f"cpu_user_delta=`{_fmt_seconds(telemetry_overview.get('proc_cpu_user'))}`, "
+                f"cpu_system_delta=`{_fmt_seconds(telemetry_overview.get('proc_cpu_system'))}`."
+            )
+        if gpu_device_count:
+            lines.append(
+                f"- GPU activity detected on `{gpu_device_count}` device(s); peak temperature: `{peak_gpu_temp:.3f}`."
+            )
+        if lines[-1] == "### Interpretation & Insights":
+            lines.append("- No telemetry insights were available.")
+        lines.append("")
+
+        lines.append("## Per-activity Resource Usage")
+        per_activity_headers = [
+            "Activity",
+            "Elapsed (s)",
+            "CPU User (s)",
+            "CPU System (s)",
+            "CPU (%)",
+            "Memory Delta",
+            "Read",
+            "Write",
+            "Read Ops",
+            "Write Ops",
+        ]
+        per_activity_headers, resource_rows = _filter_all_empty_columns(
+            per_activity_headers,
+            resource_rows,
+            keep_indices=[0, 1],
+        )
+        lines.append(_render_table(per_activity_headers, resource_rows))
+        lines.append("")
+        lines.append("### Interpretation & Insights")
+        if any((read_b + write_b) > 0 for _, read_b, write_b in io_heavy):
+            lines.append("- Most IO-heavy Activities (Read + Write):")
+            for name, read_b, write_b in io_heavy[:5]:
+                if read_b + write_b <= 0:
+                    continue
+                lines.append(f"  - `{name}`: Read={_fmt_bytes(read_b)}, Write={_fmt_bytes(write_b)}")
+        if any(cpu_pct > 0 for _, cpu_pct in cpu_heavy):
+            lines.append("- Most CPU-active Activities:")
+            for name, cpu_pct in cpu_heavy[:5]:
+                if cpu_pct <= 0:
+                    continue
+                lines.append(f"  - `{name}`: CPU={_fmt_percent(cpu_pct)}")
+        if any(mem > 0 for _, mem in mem_heavy):
+            lines.append("- Largest memory growth Activities:")
+            for name, mem in mem_heavy[:5]:
+                if mem <= 0:
+                    continue
+                lines.append(f"  - `{name}`: Memory Delta={_fmt_bytes(mem)}")
+        if any((sent + recv) > 0 for _, sent, recv in network_heavy):
+            lines.append("- Most network-active Activities:")
+            for name, sent, recv in network_heavy[:5]:
+                if sent + recv <= 0:
+                    continue
+                lines.append(f"  - `{name}`: Sent={_fmt_bytes(sent)}, Received={_fmt_bytes(recv)}")
+        if any(proc_cpu > 0 for _, proc_cpu in process_cpu_heavy):
+            lines.append("- Highest process CPU delta Activities:")
+            for name, proc_cpu in process_cpu_heavy[:5]:
+                if proc_cpu <= 0:
+                    continue
+                lines.append(f"  - `{name}`: Process CPU Delta={_fmt_percent(proc_cpu)}")
+        if any(gpu_delta > 0 for _, gpu_delta in gpu_heavy):
+            lines.append("- Highest GPU memory delta Activities:")
+            for name, gpu_delta in gpu_heavy[:5]:
+                if gpu_delta <= 0:
+                    continue
+                lines.append(f"  - `{name}`: GPU Used Delta={_fmt_bytes(gpu_delta)}")
+        if lines[-1] == "### Interpretation & Insights":
+            lines.append("- No per-Activity telemetry insights were available.")
+        lines.append("")
+
+    lines.append("## Object Artifacts Summary")
+    lines.append(
+        _render_table(
+            ["Metric", "Value"],
+            [
+                ["Total Objects", object_summary.get("total_objects", 0)],
+                ["By Type", object_summary.get("by_type", {})],
+                ["By Storage", object_summary.get("by_storage", {})],
+                ["Task-linked Objects", object_summary.get("task_linked", 0)],
+                ["Workflow-linked Objects", object_summary.get("workflow_linked", 0)],
+                ["Max Version", object_summary.get("max_version", "unknown")],
+                ["Total Size", _fmt_bytes(object_summary.get("total_size_bytes"))],
+                ["Average Size", _fmt_bytes(object_summary.get("avg_size_bytes"))],
+                ["Max Size", _fmt_bytes(object_summary.get("max_size_bytes"))],
+            ],
+        )
+    )
+    lines.append("")
+
+    lines.append("## Aggregation Method")
+    lines.append("- Grouping key: `activity_id`.")
+    lines.append("- Each grouped row may aggregate multiple task records (`n_tasks`).")
+    lines.append("- Aggregated metrics currently include count/status/timing.")
+    lines.append("")
+
+    lines.append("---")
+    generated_at = datetime.now().astimezone().strftime("%b %d, %Y at %I:%M %p %Z")
+    lines.append(
+        "Provenance card generated by [Flowcept](https://flowcept.org/) | "
+        "[GitHub](https://github.com/ORNL/flowcept) | "
+        f"[Version: {__version__}](https://github.com/ORNL/flowcept/releases/tag/v{__version__}) "
+        f"on {generated_at}"
+    )
+    lines.append("")
+
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+    return {
+        "output": str(output_path),
+        "tasks": len(tasks),
+        "transformations": len(transformations),
+        "objects": int(object_summary.get("total_objects", 0)),
+    }

@@ -41,6 +41,9 @@ jobs:
           pip install ruff
           pip install .[docs]
 
+      - name: List installed packages
+        run: pip list
+
       - name: Run linter and formatter checks using ruff
         run: make checks
 
