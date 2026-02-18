@@ -54,7 +54,9 @@ dependencies = [
 redis = ["redis"]
 lmdb = ["lmdb"]
 telemetry = ["psutil>=6.1.1", "py-cpuinfo"]
-extras = ["flowcept[redis]", "flowcept[telemetry]", "flowcept[mongo]", "GitPython", "pandas", "flask-restful", "requests"]
+extras = ["flowcept[redis]", "flowcept[telemetry]", "flowcept[mongo]", "GitPython", "pandas", "requests"]
+webservice = ["fastapi", "uvicorn", "pyyaml"]
+legacy_webservice = ["flask-restful"]
 
 analytics = ["seaborn", "plotly", "scipy", "matplotlib"]
 mongo = ["pymongo", "pyarrow"]
@@ -97,6 +99,7 @@ ml_dev = [
 all = [
     "flowcept[telemetry]",
     "flowcept[extras]",
+    "flowcept[webservice]",
     "flowcept[redis]",
     "flowcept[lmdb]",
     "flowcept[mongo]",

@@ -13,7 +13,7 @@ In practice, use this for:
 - medium/large files you want linked to tasks/workflows in the same physical database.
 
 
-When To Use Flowcept.db
+When To Use Flowcept.db for blob data management
 -----------------------
 
 Use ``Flowcept.db`` when you need a durable object record tied to provenance fields such as:
