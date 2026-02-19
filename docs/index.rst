@@ -65,6 +65,7 @@ Flowcept
    blob_versioned_single_layer_perceptron_example
    reporting
    prov_query
+   rest_api
    schemas
    contributing
    cli-reference

@@ -20,6 +20,7 @@ help:
 	@printf "\033[32mtests-notebooks\033[0m           test the notebooks using pytest\n"
 	@printf "\033[32mclean\033[0m                     remove cache directories and Sphinx build output\n"
 	@printf "\033[32mdocs\033[0m                      build HTML documentation using Sphinx\n"
+	@printf "\033[32mwebservice\033[0m                run the Flowcept webservice locally (FastAPI)\n"
 	@printf "\033[32mchecks\033[0m                    run ruff linter and formatter checks\n"
 	@printf "\033[32mreformat\033[0m                  run ruff linter and formatter\n"
 
@@ -52,8 +53,13 @@ clean:
 # Build the HTML documentation using Sphinx
 .PHONY: docs
 docs:
+	PYTHONPATH=src python docs/openapi/scripts/generate_openapi.py
 	sphinx-build -M html docs docs/_build
 	@echo "Docs built: open docs/_build/html/index.html"
+
+.PHONY: webservice
+webservice:
+	PYTHONPATH=src python -m flowcept.cli --start-webservice --webservice-host 127.0.0.1 --webservice-port 8008
 
 # Run services using Docker
 services:
