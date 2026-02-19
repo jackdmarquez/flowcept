@@ -523,6 +523,7 @@ class DBAPI(object):
         save_data_in_collection=False,
         pickle=False,
         control_version=False,
+        tags=None,
     ):
         """Save or update a blob object.
 
@@ -547,6 +548,8 @@ class DBAPI(object):
             If ``True``, pickle ``object`` before persistence.
         control_version : bool, optional
             If ``True``, enable append-only history semantics via ``object_history``.
+        tags : list of str, optional
+            Labels to associate with the object.
 
         Returns
         -------
@@ -569,6 +572,51 @@ class DBAPI(object):
             custom_metadata,
             save_data_in_collection=save_data_in_collection,
             pickle_=pickle,
+            control_version=control_version,
+            tags=tags,
+        )
+
+    def update_object_metadata(
+        self,
+        object_id,
+        custom_metadata=None,
+        tags=None,
+        type=None,
+        task_id=None,
+        workflow_id=None,
+        control_version=True,
+    ):
+        """Update object metadata without rewriting object payload bytes.
+
+        Parameters
+        ----------
+        object_id : str
+            Logical object identifier to update.
+        custom_metadata : dict, optional
+            Metadata dictionary to set.
+        tags : list of str, optional
+            Tags to set.
+        type : str, optional
+            Object type/category to set.
+        task_id : str, optional
+            Task identifier to set.
+        workflow_id : str, optional
+            Workflow identifier to set.
+        control_version : bool, optional
+            If ``True`` (default), append history and increment version.
+
+        Returns
+        -------
+        str
+            Updated object identifier.
+        """
+        return DBAPI._dao().update_object_metadata(
+            object_id=object_id,
+            custom_metadata=custom_metadata,
+            tags=tags,
+            type=type,
+            task_id=task_id,
+            workflow_id=workflow_id,
             control_version=control_version,
         )
 
@@ -636,6 +684,7 @@ class DBAPI(object):
         save_data_in_collection=False,
         pickle=False,
         control_version=False,
+        tags=None,
     ):
         """Alias to save or update ML model blobs.
 
@@ -659,6 +708,8 @@ class DBAPI(object):
             Pickle before storage.
         control_version : bool, optional
             Enable append-only history semantics.
+        tags : list of str, optional
+            Labels to associate with the object.
 
         Returns
         -------
@@ -675,6 +726,7 @@ class DBAPI(object):
             save_data_in_collection=save_data_in_collection,
             pickle=pickle,
             control_version=control_version,
+            tags=tags,
         )
 
     def save_or_update_dataset(
@@ -688,6 +740,7 @@ class DBAPI(object):
         save_data_in_collection=False,
         pickle=False,
         control_version=False,
+        tags=None,
     ) -> str:
         """Alias to save or update dataset blobs.
 
@@ -711,6 +764,8 @@ class DBAPI(object):
             Pickle before storage.
         control_version : bool, optional
             Enable append-only history semantics.
+        tags : list of str, optional
+            Labels to associate with the object.
 
         Returns
         -------
@@ -727,6 +782,7 @@ class DBAPI(object):
             save_data_in_collection=save_data_in_collection,
             pickle=pickle,
             control_version=control_version,
+            tags=tags,
         )
 
     def save_or_update_torch_model(
@@ -738,6 +794,7 @@ class DBAPI(object):
         custom_metadata=None,
         control_version=False,
         save_profile=True,
+        tags=None,
     ) -> str:
         """Save a PyTorch model state dictionary as an object blob.
 
@@ -759,6 +816,8 @@ class DBAPI(object):
         save_profile : bool, optional
             If ``True`` (default), adds ``model_profile`` to
             ``custom_metadata`` using Flowcept PyTorch profiling.
+        tags : list of str, optional
+            Labels to associate with the object.
 
         Returns
         -------
@@ -793,6 +852,7 @@ class DBAPI(object):
             workflow_id=workflow_id,
             custom_metadata=cm,
             control_version=control_version,
+            tags=tags,
         )
 
         return obj_id

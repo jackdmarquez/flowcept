@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List
 
-from flowcept.report.aggregations import group_transformations, summarize_objects
+from flowcept.report.aggregations import group_activities, summarize_objects
 from flowcept.report.loaders import load_records_from_db, read_jsonl, split_records
 from flowcept.report.renderers.provenance_card_markdown import render_provenance_card_markdown
 from flowcept.report.renderers.provenance_report_pdf import render_provenance_report_pdf
@@ -99,19 +99,19 @@ def generate_report(
     else:
         dataset = load_records_from_db(workflow_id=workflow_id, campaign_id=campaign_id)
 
-    transformations = group_transformations(dataset.get("tasks", []))
+    activities = group_activities(dataset.get("tasks", []))
     object_summary = summarize_objects(dataset.get("objects", []))
     if format == "markdown":
         render_stats = render_provenance_card_markdown(
             dataset=dataset,
-            transformations=transformations,
+            activities=activities,
             object_summary=object_summary,
             output_path=output,
         )
     else:
         render_stats = render_provenance_report_pdf(
             dataset=dataset,
-            transformations=transformations,
+            activities=activities,
             object_summary=object_summary,
             output_path=output,
         )

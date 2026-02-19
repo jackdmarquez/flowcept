@@ -277,3 +277,42 @@ class ReportServiceTests(unittest.TestCase):
             assert "model-5" in content
             assert "model-0" not in content
             assert "Latest 5" not in content
+
+    def test_generate_report_keeps_generic_title_for_ml_workflow_subtype(self):
+        records = _sample_records_with_telemetry_and_io()
+        records[0]["subtype"] = "ml_workflow"
+        records[1]["subtype"] = "dataprep"
+        records[2]["subtype"] = "learning"
+        records.append(
+            {
+                "object_id": "model-ml-1",
+                "workflow_id": "wf-tele-1",
+                "task_id": "t2",
+                "type": "ml_model",
+                "version": 2,
+                "storage_type": "gridfs",
+                "custom_metadata": {"loss": 0.125},
+            }
+        )
+        records.append(
+            {
+                "object_id": "dataset-ml-1",
+                "workflow_id": "wf-tele-1",
+                "task_id": "t1",
+                "type": "dataset",
+                "version": 1,
+                "storage_type": "in_object",
+            }
+        )
+        records[2]["generated"]["val_loss"] = 0.2
+        records[2]["generated"]["val_accuracy"] = 0.9
+
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "PROVENANCE_CARD.md"
+            Flowcept.generate_report(records=records, output_path=str(output))
+            content = output.read_text(encoding="utf-8")
+            assert "# Workflow Provenance Card: telemetry_demo" in content
+            assert "## ML Workflow Insights" not in content
+            assert "- **Workflow Subtype:** `ml_workflow`" in content
+            assert "- **LoadData** (subtype=`dataprep`)" in content
+            assert "- **Transform** (subtype=`learning`)" in content

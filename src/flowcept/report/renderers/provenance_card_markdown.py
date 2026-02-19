@@ -264,6 +264,11 @@ def _build_object_details_lines(objects: List[Dict[str, Any]]) -> List[str]:
                 f"`workflow_id`: `{_to_str(obj.get('workflow_id'), default='-')}`; "
                 f"`timestamp`: `{fmt_timestamp_utc(_extract_object_timestamp(obj))}`"
             )
+            lines.append("    <br> " f"`sha256`: `{_to_str(obj.get('data_sha256'), default='-')}`")
+            raw_tags = obj.get("tags")
+            if isinstance(raw_tags, list) and raw_tags:
+                tags_text = ", ".join(str(tag) for tag in raw_tags)
+                lines.append("    <br> " f"`tags`: `{tags_text}`")
             lines.append("    <br> `custom_metadata`:")
             lines.append("    ```yaml")
             metadata_lines = _format_nested_metadata_lines(obj.get("custom_metadata", {}))
@@ -333,6 +338,13 @@ def _summarize_field_values(values: List[Any], total_runs: int) -> str:
     return f"presence={presence}; type=mixed; sample={_safe_sample(values[0])}"
 
 
+def _format_single_field_value(value: Any) -> str:
+    """Format a single used/generated field value without aggregation metadata."""
+    if isinstance(value, (dict, list, tuple)):
+        return _format_json_like(value, max_len=220)
+    return _safe_sample(value, max_len=140)
+
+
 def _build_activity_io_summary(tasks_sorted: List[Dict[str, Any]]) -> List[str]:
     """Build markdown lines for aggregated used/generated summaries by activity."""
     by_activity: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -345,7 +357,25 @@ def _build_activity_io_summary(tasks_sorted: List[Dict[str, Any]]) -> List[str]:
     variability_candidates: List[Tuple[str, str, float]] = []
     for activity, members in by_activity.items():
         n_runs = len(members)
-        lines.append(f"- **{activity}** (`n={n_runs}`)")
+        subtype_values = sorted(
+            {
+                _to_str(member.get("subtype"), default="").strip()
+                for member in members
+                if _to_str(member.get("subtype"), default="").strip()
+            }
+        )
+        if n_runs == 1:
+            if subtype_values:
+                subtype_text = ", ".join(f"`{s}`" for s in subtype_values)
+                lines.append(f"- **{activity}** (subtype={subtype_text})")
+            else:
+                lines.append(f"- **{activity}**")
+        else:
+            if subtype_values:
+                subtype_text = ", ".join(f"`{s}`" for s in subtype_values)
+                lines.append(f"- **{activity}** (`n={n_runs}`, subtype={subtype_text})")
+            else:
+                lines.append(f"- **{activity}** (`n={n_runs}`)")
 
         used_fields: Dict[str, List[Any]] = defaultdict(list)
         gen_fields: Dict[str, List[Any]] = defaultdict(list)
@@ -364,19 +394,25 @@ def _build_activity_io_summary(tasks_sorted: List[Dict[str, Any]]) -> List[str]:
                     gen_fields[k].append(v)
 
         if used_fields:
-            lines.append("  - Used (aggregated):")
+            lines.append("  - Used:" if n_runs == 1 else "  - Used (aggregated):")
             activity_used_field_counts.append((activity, len(used_fields)))
             for key in sorted(used_fields.keys())[:8]:
-                lines.append(f"    - `{key}`: {_summarize_field_values(used_fields[key], n_runs)}")
+                if n_runs == 1:
+                    lines.append(f"    - `{key}`: `{_format_single_field_value(used_fields[key][0])}`")
+                else:
+                    lines.append(f"    - `{key}`: {_summarize_field_values(used_fields[key], n_runs)}")
                 numeric_vals = [as_float(v) for v in used_fields[key]]
                 numeric_vals = [v for v in numeric_vals if v is not None]
                 if numeric_vals and len(numeric_vals) == len(used_fields[key]):
                     variability_candidates.append((activity, f"used.{key}", max(numeric_vals) - min(numeric_vals)))
         if gen_fields:
-            lines.append("  - Generated (aggregated):")
+            lines.append("  - Generated:" if n_runs == 1 else "  - Generated (aggregated):")
             activity_generated_field_counts.append((activity, len(gen_fields)))
             for key in sorted(gen_fields.keys())[:8]:
-                lines.append(f"    - `{key}`: {_summarize_field_values(gen_fields[key], n_runs)}")
+                if n_runs == 1:
+                    lines.append(f"    - `{key}`: `{_format_single_field_value(gen_fields[key][0])}`")
+                else:
+                    lines.append(f"    - `{key}`: {_summarize_field_values(gen_fields[key], n_runs)}")
                 numeric_vals = [as_float(v) for v in gen_fields[key]]
                 numeric_vals = [v for v in numeric_vals if v is not None]
                 if numeric_vals and len(numeric_vals) == len(gen_fields[key]):
@@ -734,7 +770,7 @@ def _extract_telemetry_overview(tasks_sorted: List[Dict[str, Any]]) -> Dict[str,
 
 
 def _render_pipeline_structure(
-    tasks_sorted: List[Dict[str, Any]],
+    activities: List[Dict[str, Any]],
     input_paths: List[str],
     output_paths: List[str],
     saved_files: List[str],
@@ -745,12 +781,12 @@ def _render_pipeline_structure(
     rail = "        │"
     down = "        ▼"
     lines = [input_path, rail, down]
-    if not tasks_sorted:
+    if not activities:
         lines.extend([down, output_path])
     else:
-        for i, task in enumerate(tasks_sorted):
-            lines.append(f" {_to_str(task.get('activity_id'))}")
-            if i < len(tasks_sorted) - 1:
+        for i, row in enumerate(activities):
+            lines.append(f" {_to_str(row.get('activity_id'))}")
+            if i < len(activities) - 1:
                 lines.append(rail)
         lines.append(down)
         lines.append(output_path)
@@ -758,13 +794,13 @@ def _render_pipeline_structure(
     return "## Workflow Structure\n\n```text\n" + "\n".join(lines) + "\n```"
 
 
-def _timing_insights(tasks_sorted: List[Dict[str, Any]]) -> List[str]:
+def _timing_insights(activities: List[Dict[str, Any]]) -> List[str]:
     """Generate interpretation lines for timing report."""
     elapsed_rows: List[Tuple[str, float]] = []
-    for t in tasks_sorted:
-        e = elapsed_seconds(t.get("started_at"), t.get("ended_at"))
+    for row in activities:
+        e = as_float(row.get("elapsed_median"))
         if e is not None:
-            elapsed_rows.append((_to_str(t.get("activity_id")), e))
+            elapsed_rows.append((_to_str(row.get("activity_id")), e))
     lines = ["### Interpretation & Insights"]
     if not elapsed_rows:
         lines.append("- No valid elapsed timings were available.")
@@ -787,7 +823,7 @@ def _timing_insights(tasks_sorted: List[Dict[str, Any]]) -> List[str]:
 
 def render_provenance_card_markdown(
     dataset: Dict[str, Any],
-    transformations: List[Dict[str, Any]],
+    activities: List[Dict[str, Any]],
     object_summary: Dict[str, Any],
     output_path: Path,
 ) -> Dict[str, Any]:
@@ -810,27 +846,24 @@ def render_provenance_card_markdown(
         workflow_name = workflow_id
 
     status_counts: Dict[str, int] = {}
-    for row in transformations:
+    for row in activities:
         for status, count in row["status_counts"].items():
             status_counts[status] = status_counts.get(status, 0) + int(count)
 
     timing_rows = []
-    for task in tasks_sorted:
+    for row in activities:
         timing_rows.append(
             [
-                _to_str(task.get("activity_id")),
-                _to_str(task.get("status")),
-                fmt_timestamp_utc(task.get("started_at")),
-                fmt_timestamp_utc(task.get("ended_at")),
-                _fmt_seconds(elapsed_seconds(task.get("started_at"), task.get("ended_at"))),
+                _to_str(row.get("activity_id")),
+                _to_str(row.get("status_counts")),
+                fmt_timestamp_utc(row.get("started_at_min")),
+                fmt_timestamp_utc(row.get("ended_at_max")),
+                _fmt_seconds(as_float(row.get("elapsed_median"))),
             ]
         )
 
     top_slowest = sorted(
-        [
-            (_to_str(t.get("activity_id")), elapsed_seconds(t.get("started_at"), t.get("ended_at")))
-            for t in tasks_sorted
-        ],
+        [(_to_str(row.get("activity_id")), as_float(row.get("elapsed_median"))) for row in activities],
         key=lambda x: x[1] if x[1] is not None else -1,
         reverse=True,
     )[:5]
@@ -959,6 +992,8 @@ def render_provenance_card_markdown(
     lines.append(f"- **User:** `{_to_str(workflow.get('user'))}`")
     lines.append(f"- **System Name:** `{_to_str(workflow.get('sys_name'))}`")
     lines.append(f"- **Environment ID:** `{_to_str(workflow.get('environment_id'))}`")
+    if workflow.get("subtype") is not None:
+        lines.append(f"- **Workflow Subtype:** `{_to_str(workflow.get('subtype'))}`")
     lines.append(f"- **Code Repository:** `{code_repo_text}`")
     lines.append(f"- **Git Remote:** `{_to_str(code_repo.get('remote'))}`")
     workflow_args = workflow.get("used", {}) if isinstance(workflow.get("used"), dict) else {}
@@ -980,11 +1015,11 @@ def render_provenance_card_markdown(
     lines.append("")
 
     lines.append("## Workflow-level Summary")
-    lines.append(f"- **Total Activities:** `{len(transformations)}`")
+    lines.append(f"- **Total Activities:** `{len(activities)}`")
     lines.append(f"- **Status Counts:** `{status_counts}`")
     lines.append(f"- **Total Elapsed Workflow Time (s):** `{_fmt_seconds(total_elapsed)}`")
     slowest_items = [(name, sec) for name, sec in top_slowest if sec is not None]
-    if len(transformations) > 5 and slowest_items:
+    if len(activities) > 5 and slowest_items:
         lines.append("- **Top 5 Slowest Activities:**")
     for name, sec in slowest_items:
         lines.append(f"  - `{name}`: `{_fmt_seconds(sec)} s`")
@@ -1008,21 +1043,20 @@ def render_provenance_card_markdown(
                 f"and Write `{_fmt_bytes(top_io[2])}`"
             )
     lines.append("")
-
-    lines.append(_render_pipeline_structure(tasks_sorted, input_paths, output_paths, saved_files))
+    lines.append(_render_pipeline_structure(activities, input_paths, output_paths, saved_files))
     lines.append("")
 
     lines.append("## Timing Report")
-    lines.append("Rows are sorted by **Started At** (ascending).")
+    lines.append("Rows are sorted by **First Started At** (ascending).")
     lines.append("")
     lines.append(
         _render_table(
-            ["Activity", "Status", "Started At", "Ended At", "Elapsed (s)"],
+            ["Activity", "Status Counts", "First Started At", "Last Ended At", "Median Elapsed (s)"],
             timing_rows,
         )
     )
     lines.append("")
-    lines.extend(_timing_insights(tasks_sorted))
+    lines.extend(_timing_insights(activities))
     lines.append("")
     lines.extend(_build_activity_io_summary(tasks_sorted))
 
@@ -1237,6 +1271,6 @@ def render_provenance_card_markdown(
     return {
         "output": str(output_path),
         "tasks": len(tasks),
-        "transformations": len(transformations),
+        "activities": len(activities),
         "objects": int(object_summary.get("total_objects", 0)),
     }

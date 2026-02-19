@@ -545,6 +545,7 @@ class MongoDBDAO(DocumentDBDAO):
             "workflow_id": doc.get("workflow_id"),
             "type": doc.get("type"),
             "custom_metadata": doc.get("custom_metadata"),
+            "tags": doc.get("tags"),
             "object_size_bytes": doc.get("object_size_bytes"),
             "data_sha256": doc.get("data_sha256"),
             "data_hash_algo": doc.get("data_hash_algo"),
@@ -567,6 +568,7 @@ class MongoDBDAO(DocumentDBDAO):
             "workflow_id": latest_doc.get("workflow_id"),
             "type": latest_doc.get("type"),
             "custom_metadata": latest_doc.get("custom_metadata"),
+            "tags": latest_doc.get("tags"),
             "object_size_bytes": latest_doc.get("object_size_bytes"),
             "data_sha256": latest_doc.get("data_sha256"),
             "data_hash_algo": latest_doc.get("data_hash_algo"),
@@ -751,6 +753,7 @@ class MongoDBDAO(DocumentDBDAO):
         save_data_in_collection=False,
         pickle_=False,
         control_version=False,
+        tags=None,
     ):
         """Save an object."""
         if object_id is None:
@@ -777,6 +780,8 @@ class MongoDBDAO(DocumentDBDAO):
             obj_doc["type"] = type
         if custom_metadata is not None:
             obj_doc["custom_metadata"] = custom_metadata
+        if tags is not None:
+            obj_doc["tags"] = list(tags)
 
         if not control_version:
             update_query = [
@@ -843,6 +848,80 @@ class MongoDBDAO(DocumentDBDAO):
                     raise e
                 sleep(0.02 * (attempt + 1))
                 continue
+
+        raise ValueError(f"Could not update object_id={object_id} due to repeated concurrent CAS failures.")
+
+    def update_object_metadata(
+        self,
+        object_id,
+        custom_metadata=None,
+        tags=None,
+        type=None,
+        task_id=None,
+        workflow_id=None,
+        control_version=True,
+    ):
+        """Update object metadata without rewriting payload data."""
+        if object_id is None:
+            raise ValueError("object_id must not be None.")
+
+        from flowcept.configs import FLOWCEPT_USER
+
+        actor = FLOWCEPT_USER
+        now = MongoDBDAO._utc_now()
+        set_fields = {}
+
+        if custom_metadata is not None:
+            set_fields["custom_metadata"] = custom_metadata
+        if tags is not None:
+            set_fields["tags"] = list(tags)
+        if type is not None:
+            set_fields["type"] = type
+        if task_id is not None:
+            set_fields["task_id"] = task_id
+        if workflow_id is not None:
+            set_fields["workflow_id"] = workflow_id
+
+        if not set_fields:
+            return object_id
+
+        if not control_version:
+            set_fields["updated_at"] = now
+            set_fields["updated_by"] = actor
+            result = self._obj_collection.update_one(
+                {"object_id": object_id},
+                {"$set": set_fields, "$inc": {"version": 1}},
+                upsert=False,
+            )
+            if result.matched_count != 1:
+                raise ValueError(f"Object not found for object_id={object_id}.")
+            return object_id
+
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            latest_doc = self._obj_collection.find_one({"object_id": object_id})
+            if latest_doc is None:
+                raise ValueError(f"Object not found for object_id={object_id}.")
+
+            expected_version = int(latest_doc.get("version", 0))
+            update_doc = dict(latest_doc)
+            update_doc.pop("_id", None)
+            update_doc.update(set_fields)
+            update_doc["version"] = expected_version + 1
+            update_doc["prev_version"] = expected_version
+            update_doc["created_at"] = latest_doc.get("created_at", now)
+            update_doc["created_by"] = latest_doc.get("created_by", actor)
+            update_doc["updated_at"] = now
+            update_doc["updated_by"] = actor
+            matched_count = self._update_with_optional_transaction(
+                object_id=object_id,
+                expected_version=expected_version,
+                latest_doc=latest_doc,
+                update_doc=update_doc,
+            )
+            if matched_count == 1:
+                return object_id
+            sleep(0.02 * (attempt + 1))
 
         raise ValueError(f"Could not update object_id={object_id} due to repeated concurrent CAS failures.")
 
@@ -982,7 +1061,7 @@ class MongoDBDAO(DocumentDBDAO):
         elif collection == "workflows":
             return self.workflow_query(filter, projection, limit, sort, remove_json_unserializables)
         elif collection == "objects":
-            return self.object_query(filter)
+            return self.object_query(filter, projection, limit, sort)
         elif collection == "object_history":
             return list(self._obj_history_collection.find(filter))
         else:
@@ -1143,10 +1222,15 @@ class MongoDBDAO(DocumentDBDAO):
             self.logger.exception(e)
             return None
 
-    def object_query(self, filter) -> List[dict]:
-        """Get objects."""
+    def object_query(self, filter=None, projection=None, limit=0, sort=None) -> List[dict]:
+        """Get objects with optional projection, sort, and limit."""
         try:
-            documents = self._obj_collection.find(filter)
+            find_filter = filter if isinstance(filter, dict) else {}
+            documents = self._obj_collection.find(find_filter, projection)
+            if sort:
+                documents = documents.sort(sort)
+            if isinstance(limit, int) and limit > 0:
+                documents = documents.limit(limit)
             return list(documents)
         except Exception as e:
             self.logger.exception(e)
