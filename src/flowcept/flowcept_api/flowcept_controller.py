@@ -58,6 +58,7 @@ class Flowcept(object):
         campaign_id: str = None,
         workflow_id: str = None,
         workflow_name: str = None,
+        workflow_subtype: str = None,
         workflow_args: Dict = None,
         start_persistence=True,
         check_safe_stops=True,  # TODO add to docstring
@@ -91,6 +92,10 @@ class Flowcept(object):
 
         workflow_name : str, optional
             A descriptive name for the workflow.
+
+        workflow_subtype : str, optional
+            Optional subtype for workflow categorization
+            (e.g., ``ml_workflow``, ``data_prep_workflow``).
 
         workflow_args : str, optional
             Additional arguments related to the workflow.
@@ -144,6 +149,7 @@ class Flowcept(object):
             self.bundle_exec_id = str(bundle_exec_id)
 
         self.workflow_name = workflow_name
+        self.workflow_subtype = workflow_subtype
         self.workflow_args = workflow_args
         should_delete_buffer_file = (
             flowcept.configs.DELETE_BUFFER_FILE if delete_buffer_file is None else delete_buffer_file
@@ -536,6 +542,8 @@ class Flowcept(object):
 
         if self.workflow_name:
             wf_obj.name = self.workflow_name
+        if self.workflow_subtype:
+            wf_obj.subtype = self.workflow_subtype
         if self.workflow_args:
             wf_obj.used = self.workflow_args
 

@@ -378,8 +378,22 @@ class LMDBDAO(DocumentDBDAO):
         save_data_in_collection,
         pickle_,
         control_version=False,
+        tags=None,
     ):
         """Save object."""
+        raise NotImplementedError
+
+    def update_object_metadata(
+        self,
+        object_id,
+        custom_metadata=None,
+        tags=None,
+        type=None,
+        task_id=None,
+        workflow_id=None,
+        control_version=True,
+    ):
+        """Update object metadata only."""
         raise NotImplementedError
 
     def get_file_data(self, file_id):

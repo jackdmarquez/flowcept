@@ -62,9 +62,10 @@ Flowcept
    telemetry_capture
    prov_storage
    blob_data
-   blob_multilayer_perceptron_example
+   blob_versioned_single_layer_perceptron_example
    reporting
    prov_query
+   rest_api
    schemas
    contributing
    cli-reference

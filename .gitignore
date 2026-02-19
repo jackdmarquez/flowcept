@@ -35,4 +35,6 @@ core.*
 uv.lock
 examples/flowcept_messages.jsonl
 agents.md
-tests/instrumentation_tests/ml_tests/PROVENANCE*.md
+agent_sandbox/
+*PROVENANCE_*md
+*PROVENANCE_*pdf

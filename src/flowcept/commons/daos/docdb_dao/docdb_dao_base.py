@@ -355,6 +355,7 @@ class DocumentDBDAO(ABC):
         save_data_in_collection,
         pickle_,
         control_version=False,
+        tags=None,
     ):
         """Save an object with associated metadata.
 
@@ -376,11 +377,46 @@ class DocumentDBDAO(ABC):
             Whether to save the object in a database collection.
         pickle_ : bool
             Whether to serialize the object using pickle.
+        tags : list of str, optional
+            Labels to associate with the object.
 
         Raises
         ------
         NotImplementedError
             This method must be implemented by subclasses.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_object_metadata(
+        self,
+        object_id,
+        custom_metadata=None,
+        tags=None,
+        type=None,
+        task_id=None,
+        workflow_id=None,
+        control_version=True,
+    ):
+        """Update object metadata without rewriting blob payload.
+
+        Parameters
+        ----------
+        object_id : str
+            Logical object identifier to update.
+        custom_metadata : dict, optional
+            Metadata to set on the object.
+        tags : list of str, optional
+            Tags to set on the object.
+        type : str, optional
+            Type/category label to set.
+        task_id : str, optional
+            Task identifier to set.
+        workflow_id : str, optional
+            Workflow identifier to set.
+        control_version : bool, optional
+            If ``True``, append previous latest version to history and increment
+            object version.
         """
         raise NotImplementedError
 
