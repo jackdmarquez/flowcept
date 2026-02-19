@@ -192,6 +192,62 @@ class DBAPITest(unittest.TestCase):
             assert retrieved_v1 == payload_v1
 
     @unittest.skipIf(not MONGO_ENABLED, "MongoDB is disabled")
+    def test_blob_fingerprint_and_equality_in_object(self):
+        with Flowcept(workflow_name="blob_fingerprint_test"):
+            payload = b"equal-payload"
+            obj_id_a = Flowcept.db.save_or_update_object(
+                object=payload,
+                type="artifact",
+                save_data_in_collection=True,
+            )
+            obj_id_b = Flowcept.db.save_or_update_object(
+                object=payload,
+                type="artifact",
+                save_data_in_collection=True,
+            )
+            obj_id_c = Flowcept.db.save_or_update_object(
+                object=b"different-payload",
+                type="artifact",
+                save_data_in_collection=True,
+            )
+
+            fp_a = Flowcept.db.get_blob_fingerprint(obj_id_a)
+            assert fp_a["data_hash_algo"] == "sha256"
+            assert fp_a["data_sha256"] is not None
+            assert fp_a["object_size_bytes"] == len(payload)
+
+            assert Flowcept.db.blob_objects_equal(obj_id_a, obj_id_b)
+            assert not Flowcept.db.blob_objects_equal(obj_id_a, obj_id_c)
+
+    @unittest.skipIf(not MONGO_ENABLED, "MongoDB is disabled")
+    def test_blob_fingerprint_and_equality_gridfs(self):
+        with Flowcept(workflow_name="blob_fingerprint_gridfs_test"):
+            payload = b"gridfs-equal-payload"
+            obj_id_a = Flowcept.db.save_or_update_object(
+                object=payload,
+                type="artifact",
+                save_data_in_collection=False,
+            )
+            obj_id_b = Flowcept.db.save_or_update_object(
+                object=payload,
+                type="artifact",
+                save_data_in_collection=False,
+            )
+            obj_id_c = Flowcept.db.save_or_update_object(
+                object=b"gridfs-different-payload",
+                type="artifact",
+                save_data_in_collection=False,
+            )
+
+            fp_a = Flowcept.db.get_blob_fingerprint(obj_id_a)
+            assert fp_a["storage_type"] == "gridfs"
+            assert fp_a["data_hash_algo"] == "sha256"
+            assert fp_a["data_sha256"] is not None
+
+            assert Flowcept.db.blob_objects_equal(obj_id_a, obj_id_b)
+            assert not Flowcept.db.blob_objects_equal(obj_id_a, obj_id_c)
+
+    @unittest.skipIf(not MONGO_ENABLED, "MongoDB is disabled")
     def test_ml_model_aliases(self):
         payload = b"model-bytes"
         with Flowcept(workflow_name="ml_model_alias_test"):

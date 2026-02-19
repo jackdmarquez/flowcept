@@ -1,5 +1,6 @@
 # flake8: noqa: E501
 # flake8: noqa: D103
+from flowcept.agents.flowcept_ctx_manager import EMPTY_DF_MESSAGE, get_df_context, mcp_flowcept
 
 
 def generate_common_task_fields(current_fields):
@@ -356,6 +357,41 @@ def generate_pandas_code_prompt(query: str, dynamic_schema, example_values, cust
         f"{OUTPUT_FORMATTING}"
         "User Query:"
         f"{query}"
+    )
+    return prompt
+
+
+@mcp_flowcept.prompt(
+    name="build_df_query_prompt",
+    title="Build DataFrame Query Prompt",
+    description="Build prompt context for external LLM code generation over agent DataFrame context.",
+)
+def build_df_query_prompt(query: str) -> str:
+    """
+    Build the internal pandas-code generation prompt for external LLM orchestration.
+
+    Parameters
+    ----------
+    query : str
+        Natural language question to translate into pandas code.
+
+    Returns
+    -------
+    str
+        Prompt text to guide external LLM code generation.
+        Returns an explanatory message when there is no active DataFrame context.
+    """
+    df, schema, value_examples, custom_user_guidance = get_df_context()
+    if df is None or not len(df):
+        return EMPTY_DF_MESSAGE
+
+    current_fields = list(df.columns)
+    prompt = generate_pandas_code_prompt(
+        query,
+        schema,
+        value_examples,
+        custom_user_guidance,
+        current_fields,
     )
     return prompt
 

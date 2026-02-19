@@ -1,6 +1,6 @@
 """Blob Object module."""
 
-from typing import Dict, AnyStr
+from typing import Dict, AnyStr, List
 
 
 class BlobObject:
@@ -25,6 +25,9 @@ class BlobObject:
     custom_metadata: Dict = None
     """Optional user-defined metadata dictionary."""
 
+    tags: List[str] = None
+    """Optional labels associated with the object."""
+
     version: int = 0
     """Monotonic version of this blob object. Starts at ``0`` and increments on updates."""
 
@@ -35,6 +38,7 @@ class BlobObject:
         workflow_id=None,
         type=None,
         custom_metadata=None,
+        tags=None,
         version: int = 0,
     ):
         self.object_id = object_id
@@ -42,6 +46,7 @@ class BlobObject:
         self.workflow_id = workflow_id
         self.type = type
         self.custom_metadata = custom_metadata
+        self.tags = tags
         self.version = 0 if version is None else int(version)
 
     @staticmethod
@@ -78,6 +83,7 @@ class BlobObject:
             f"workflow_id={repr(self.workflow_id)}, "
             f"type={repr(self.type)}, "
             f"custom_metadata={repr(self.custom_metadata)}, "
+            f"tags={repr(self.tags)}, "
             f"version={repr(self.version)})"
         )
 

@@ -30,6 +30,17 @@ from typing import List
 
 from flowcept import configs
 
+FLOWCEPT_BANNER = r"""
+███████╗██╗      ██████╗ ██╗    ██╗ ██████╗███████╗██████╗ ████████╗
+██╔════╝██║     ██╔═══██╗██║    ██║██╔════╝██╔════╝██╔══██╗╚══██╔══╝
+█████╗  ██║     ██║   ██║██║ █╗ ██║██║     █████╗  ██████╔╝   ██║
+██╔══╝  ██║     ██║   ██║██║███╗██║██║     ██╔══╝  ██╔═══╝    ██║
+██║     ███████╗╚██████╔╝╚███╔███╔╝╚██████╗███████╗██║        ██║
+╚═╝     ╚══════╝ ╚═════╝  ╚══╝╚══╝  ╚═════╝╚══════╝╚═╝        ╚═╝
+           Lightweight Distributed Workflow Provenance
+                    https://flowcept.org/
+"""
+
 
 def no_docstring(func):
     """Decorator to silence linter for missing docstrings."""
@@ -610,12 +621,41 @@ def start_redis() -> None:
         print(f"Failed to start Redis: {e}")
 
 
+def start_webservice(webservice_host: str = "127.0.0.1", webservice_port: str = "8008"):
+    """
+    Start the Flowcept FastAPI webservice locally.
+
+    Parameters
+    ----------
+    webservice_host : str, optional
+        Host interface to bind (default: 127.0.0.1).
+    webservice_port : int, optional
+        Port to bind (default: 8008).
+    """
+    host = webservice_host
+    port = webservice_port
+    print(f"Starting Flowcept webservice on http://{host}:{port}")
+    print(f"Swagger UI:   http://{host}:{port}/docs")
+    print(f"ReDoc:        http://{host}:{port}/redoc")
+    print(f"OpenAPI JSON: http://{host}:{port}/openapi.json")
+    try:
+        import uvicorn
+    except Exception as e:
+        print("Could not import uvicorn. Install webservice dependencies: pip install -e '.[webservice]'")
+        print(e)
+        return
+
+    from flowcept.webservice.main import app
+
+    uvicorn.run(app, host=host, port=int(port))
+
+
 COMMAND_GROUPS = [
     ("Basic Commands", [version, check_services, show_settings, init_settings, start_services, stop_services]),
     ("Consumption Commands", [start_consumption_services, stop_consumption_services, stream_messages]),
     ("Database Commands", [workflow_count, query, get_task]),
     ("Agent Commands", [start_agent, agent_client, start_agent_gui]),
-    ("External Services", [start_mongo, start_redis]),
+    ("External Services", [start_mongo, start_redis, start_webservice]),
 ]
 
 COMMANDS = set(f for _, fs in COMMAND_GROUPS for f in fs)
@@ -727,6 +767,7 @@ def main():  # noqa: D103
         sys.exit(0)
 
     if len(sys.argv) == 1 or help_flag:
+        print(FLOWCEPT_BANNER)
         print("\nFlowcept CLI\n")
         for group, funcs in COMMAND_GROUPS:
             print(f"{group}:\n")

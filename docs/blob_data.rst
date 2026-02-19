@@ -13,7 +13,7 @@ In practice, use this for:
 - medium/large files you want linked to tasks/workflows in the same physical database.
 
 
-When To Use Flowcept.db
+When To Use Flowcept.db for blob data management
 -----------------------
 
 Use ``Flowcept.db`` when you need a durable object record tied to provenance fields such as:
@@ -33,6 +33,8 @@ The main object API is:
 
 - ``Flowcept.db.save_or_update_object(...)``
 - ``Flowcept.db.get_blob_object(object_id)``
+- ``Flowcept.db.get_blob_fingerprint(object_id)`` (metadata-only hash/size fingerprint)
+- ``Flowcept.db.blob_objects_equal(object_id_a, object_id_b)`` (fast equality check by fingerprint)
 - ``Flowcept.db.blob_object_query(filter)``
 - ``Flowcept.db.query(..., collection="objects")``
 - ``Flowcept.db.save_or_update_ml_model(...)`` (alias with ``type="ml_model"`` preset)
@@ -102,8 +104,8 @@ List versions metadata only (no blob bytes):
 See a full model-checkpoint walkthrough:
 :doc:`Versioned Single-Layer Perceptron Example <blob_versioned_model_example>`.
 
-See a full multilayer perceptron walkthrough (including dataset persistence):
-:doc:`Versioned Multilayer Perceptron Example <blob_multilayer_perceptron_example>`.
+See a full single-layer perceptron walkthrough (including dataset persistence):
+:doc:`Versioned Single-Layer Perceptron Example <blob_versioned_single_layer_perceptron_example>`.
 
 
 Simple Example: Store Bytes + Linkage Fields
