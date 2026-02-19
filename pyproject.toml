@@ -57,6 +57,7 @@ telemetry = ["psutil>=6.1.1", "py-cpuinfo"]
 extras = ["flowcept[redis]", "flowcept[telemetry]", "flowcept[mongo]", "GitPython", "pandas", "flask-restful", "requests"]
 
 analytics = ["seaborn", "plotly", "scipy", "matplotlib"]
+report_pdf = ["matplotlib", "reportlab"]
 mongo = ["pymongo", "pyarrow"]
 dask = ["tomli", "dask[distributed]<=2024.10.0"]
 docs = ["sphinx", "furo"]
@@ -106,6 +107,7 @@ all = [
     "flowcept[mlflow]",
     "flowcept[mqtt]",
     "flowcept[tensorboard]",
+    "flowcept[report_pdf]",
     "flowcept[dev]",
     "flowcept[llm_agent]",
     "flowcept[llm_google]"

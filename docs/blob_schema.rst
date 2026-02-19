@@ -48,6 +48,15 @@ Optional Fields
 - **prev_version** (int or null):
   Previous latest version number (``None`` for first insert in controlled mode).
 
+- **object_size_bytes** (int):
+  Payload size in bytes when available.
+
+- **data_sha256** (str):
+  SHA-256 hash of payload bytes for fast equality checks and integrity verification.
+
+- **data_hash_algo** (str):
+  Hash algorithm label for the payload fingerprint (currently ``sha256``).
+
 Notes
 -----
 

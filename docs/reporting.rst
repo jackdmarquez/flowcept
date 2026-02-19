@@ -6,7 +6,9 @@ Flowcept can generate summarized reports from provenance records.
 Current report implementation:
 
 - ``report_type="provenance_card"``
-- ``format="markdown"``
+- ``report_type="provenance_report"``
+- ``provenance_card`` uses ``format="markdown"``
+- ``provenance_report`` uses ``format="pdf"`` (executive PDF with plots)
 
 
 API
@@ -23,6 +25,14 @@ Use:
        format="markdown",
        output_path="PROVENANCE_CARD.md",
        records=my_records,  # or input_jsonl_path=..., or workflow_id/campaign_id
+   )
+
+   # PDF report (optional dependency: flowcept[report_pdf])
+   Flowcept.generate_report(
+       report_type="provenance_report",
+       format="pdf",
+       output_path="PROVENANCE_REPORT.pdf",
+       workflow_id="my_workflow_id",
    )
 
 
@@ -49,6 +59,22 @@ The provenance card is summarized, not raw-dump oriented.
 
 This aggregation method is also written in the generated card under
 ``Aggregation Method``.
+
+
+PDF Report Notes
+----------------
+
+The PDF renderer keeps the provenance card markdown content and adds executive plots:
+
+- Top slowest activities (bar chart)
+- Top fastest activities (bar chart)
+- Most resource-demanding activities by total IO bytes (bar chart)
+
+Install optional dependencies:
+
+.. code-block:: shell
+
+   pip install flowcept[report_pdf]
 
 
 Object Metadata Summary
