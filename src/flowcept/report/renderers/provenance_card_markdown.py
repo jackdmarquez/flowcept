@@ -264,11 +264,11 @@ def _build_object_details_lines(objects: List[Dict[str, Any]]) -> List[str]:
                 f"`workflow_id`: `{_to_str(obj.get('workflow_id'), default='-')}`; "
                 f"`timestamp`: `{fmt_timestamp_utc(_extract_object_timestamp(obj))}`"
             )
-            lines.append("    <br> " f"`sha256`: `{_to_str(obj.get('data_sha256'), default='-')}`")
+            lines.append(f"    <br> `sha256`: `{_to_str(obj.get('data_sha256'), default='-')}`")
             raw_tags = obj.get("tags")
             if isinstance(raw_tags, list) and raw_tags:
                 tags_text = ", ".join(str(tag) for tag in raw_tags)
-                lines.append("    <br> " f"`tags`: `{tags_text}`")
+                lines.append(f"    <br> `tags`: `{tags_text}`")
             lines.append("    <br> `custom_metadata`:")
             lines.append("    ```yaml")
             metadata_lines = _format_nested_metadata_lines(obj.get("custom_metadata", {}))
