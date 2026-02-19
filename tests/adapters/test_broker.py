@@ -2,15 +2,15 @@ import json
 import unittest
 import uuid
 from time import sleep
+
 import paho.mqtt.client as mqtt
 
-from flowcept.commons.flowcept_logger import FlowceptLogger
 from flowcept import Flowcept
+from flowcept.commons.flowcept_logger import FlowceptLogger
 from flowcept.commons.utils import assert_by_querying_tasks_until, get_utc_now_str
 from flowcept.configs import settings
 
 
-@unittest.skip("Skipping this test as this is an experimental feature.")
 class TestBroker(unittest.TestCase):
     def __init__(self, *args, **kwargs):
         super(TestBroker, self).__init__(*args, **kwargs)
@@ -23,7 +23,7 @@ class TestBroker(unittest.TestCase):
         username = settings["adapters"]["broker_mqtt"]["username"]
         password = settings["adapters"]["broker_mqtt"]["password"]
         topic = settings["adapters"]["broker_mqtt"]["queues"][0]
-        qos = 2#settings["adapters"]["broker_mqtt"]["qos"]
+        qos = 2  # settings["adapters"]["broker_mqtt"]["qos"]
 
         for i in range(2):
             TestBroker.publish_msg(host, port, username, password, qos, topic)
@@ -34,15 +34,18 @@ class TestBroker(unittest.TestCase):
         if topic is None:
             topic = "s3m-org/s3m-facility/s3m-system/s3m-subsystem/s3m-service/request"
         intersect_msg = {
-            'messageId': msgId,
-            'operationId': 'IntersectS3M.test_intersect_message',
-            'contentType': 'application/json',
-            'payload': '"S3M Intersect test!"',
-            'headers': {'source': 'tmp-.tmp-.tmp-.-.tmp-66155c12-843c-4a69-bcec-3813acd3de9d',
-            'destination': 's3m-org.s3m-facility.s3m-system.s3m-subsystem.s3m-service',
-            'sdk_version': '0.8.2', 'created_at': get_utc_now_str(),
-            'data_handler': 0,
-            'has_error': False}
+            "messageId": msgId,
+            "operationId": "IntersectS3M.test_intersect_message",
+            "contentType": "application/json",
+            "payload": '"S3M Intersect test!"',
+            "headers": {
+                "source": "tmp-.tmp-.tmp-.-.tmp-66155c12-843c-4a69-bcec-3813acd3de9d",
+                "destination": "s3m-org.s3m-facility.s3m-system.s3m-subsystem.s3m-service",
+                "sdk_version": "0.8.2",
+                "created_at": get_utc_now_str(),
+                "data_handler": 0,
+                "has_error": False,
+            },
         }
         client = mqtt.Client(client_id="producer", clean_session=False, protocol=mqtt.MQTTv311)
         client.username_pw_set(username, password)
