@@ -47,6 +47,7 @@ def list_models(
     include_data: bool = False,
     db: DBAPI = Depends(get_db_api),
 ) -> ListResponse:
+    """List ML model objects with optional filters."""
     query_filter = _json_filter(filter_json)
     query_filter["type"] = "ml_model"
     if workflow_id is not None:
@@ -62,7 +63,13 @@ def list_models(
 
 
 @router.get("/{object_id}", response_model=Dict[str, Any])
-def get_model(object_id: str, version: int | None = None, include_data: bool = False, db: DBAPI = Depends(get_db_api)):
+def get_model(
+    object_id: str,
+    version: int | None = None,
+    include_data: bool = False,
+    db: DBAPI = Depends(get_db_api),
+):
+    """Get ML model object metadata by id and optional version."""
     try:
         blob = db.get_blob_object(object_id=object_id, version=version)
     except ValueError as exc:
@@ -75,12 +82,23 @@ def get_model(object_id: str, version: int | None = None, include_data: bool = F
 
 
 @router.get("/{object_id}/versions/{version}", response_model=Dict[str, Any])
-def get_model_version(object_id: str, version: int, include_data: bool = False, db: DBAPI = Depends(get_db_api)):
+def get_model_version(
+    object_id: str,
+    version: int,
+    include_data: bool = False,
+    db: DBAPI = Depends(get_db_api),
+):
+    """Get a specific ML model object version."""
     return get_model(object_id=object_id, version=version, include_data=include_data, db=db)
 
 
 @router.get("/{object_id}/download")
-def download_model(object_id: str, version: int | None = None, db: DBAPI = Depends(get_db_api)):
+def download_model(
+    object_id: str,
+    version: int | None = None,
+    db: DBAPI = Depends(get_db_api),
+):
+    """Download ML model payload as a binary attachment."""
     try:
         blob = db.get_blob_object(object_id=object_id, version=version)
     except ValueError as exc:
@@ -101,6 +119,7 @@ def download_model(object_id: str, version: int | None = None, db: DBAPI = Depen
 
 @router.post("/query", response_model=ListResponse)
 def query_models(payload: ObjectQueryRequest, db: DBAPI = Depends(get_db_api)):
+    """Run an advanced read-only query for ML model objects."""
     query_filter = dict(payload.filter)
     query_filter["type"] = "ml_model"
     docs = db.query(

@@ -33,9 +33,7 @@ def _to_jsonable(value: Any, include_data: bool = False) -> Any:
         return [_to_jsonable(item, include_data=include_data) for item in value]
     if isinstance(value, dict):
         return {
-            str(k): _to_jsonable(v, include_data=include_data)
-            for k, v in value.items()
-            if include_data or k != "data"
+            str(k): _to_jsonable(v, include_data=include_data) for k, v in value.items() if include_data or k != "data"
         }
     return str(value)
 

@@ -40,8 +40,9 @@ def sort_docs_by_first_date_field(docs: List[Dict[str, Any]], date_fields: List[
 
     return sorted(
         docs,
-        key=lambda doc: (0, _as_sortable_number(doc.get(chosen_field)))
-        if _as_sortable_number(doc.get(chosen_field)) is not None
-        else (1, float("inf")),
+        key=lambda doc: (
+            (0, _as_sortable_number(doc.get(chosen_field)))
+            if _as_sortable_number(doc.get(chosen_field)) is not None
+            else (1, float("inf"))
+        ),
     )
-

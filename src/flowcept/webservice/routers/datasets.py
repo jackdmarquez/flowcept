@@ -47,6 +47,7 @@ def list_datasets(
     include_data: bool = False,
     db: DBAPI = Depends(get_db_api),
 ) -> ListResponse:
+    """List dataset objects with optional filters."""
     query_filter = _json_filter(filter_json)
     query_filter["type"] = "dataset"
     if workflow_id is not None:
@@ -62,7 +63,13 @@ def list_datasets(
 
 
 @router.get("/{object_id}", response_model=Dict[str, Any])
-def get_dataset(object_id: str, version: int | None = None, include_data: bool = False, db: DBAPI = Depends(get_db_api)):
+def get_dataset(
+    object_id: str,
+    version: int | None = None,
+    include_data: bool = False,
+    db: DBAPI = Depends(get_db_api),
+):
+    """Get dataset object metadata by id and optional version."""
     try:
         blob = db.get_blob_object(object_id=object_id, version=version)
     except ValueError as exc:
@@ -75,12 +82,23 @@ def get_dataset(object_id: str, version: int | None = None, include_data: bool =
 
 
 @router.get("/{object_id}/versions/{version}", response_model=Dict[str, Any])
-def get_dataset_version(object_id: str, version: int, include_data: bool = False, db: DBAPI = Depends(get_db_api)):
+def get_dataset_version(
+    object_id: str,
+    version: int,
+    include_data: bool = False,
+    db: DBAPI = Depends(get_db_api),
+):
+    """Get a specific dataset object version."""
     return get_dataset(object_id=object_id, version=version, include_data=include_data, db=db)
 
 
 @router.get("/{object_id}/download")
-def download_dataset(object_id: str, version: int | None = None, db: DBAPI = Depends(get_db_api)):
+def download_dataset(
+    object_id: str,
+    version: int | None = None,
+    db: DBAPI = Depends(get_db_api),
+):
+    """Download dataset payload as a binary attachment."""
     try:
         blob = db.get_blob_object(object_id=object_id, version=version)
     except ValueError as exc:
@@ -101,6 +119,7 @@ def download_dataset(object_id: str, version: int | None = None, db: DBAPI = Dep
 
 @router.post("/query", response_model=ListResponse)
 def query_datasets(payload: ObjectQueryRequest, db: DBAPI = Depends(get_db_api)):
+    """Run an advanced read-only query for dataset objects."""
     query_filter = dict(payload.filter)
     query_filter["type"] = "dataset"
     docs = db.query(
