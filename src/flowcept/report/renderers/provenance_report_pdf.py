@@ -47,27 +47,23 @@ def _build_telemetry_chart_data(tasks: Iterable[Dict[str, Any]]) -> List[Tuple[s
         if not start and not end:
             continue
 
-        cpu_delta = (
-            (as_float(_deep_get(end, ["cpu", "percent_all"])) or 0.0)
-            - (as_float(_deep_get(start, ["cpu", "percent_all"])) or 0.0)
+        cpu_delta = (as_float(_deep_get(end, ["cpu", "percent_all"])) or 0.0) - (
+            as_float(_deep_get(start, ["cpu", "percent_all"])) or 0.0
         )
         if cpu_delta > 0:
             cpu_by_activity.setdefault(activity, []).append(cpu_delta)
 
-        memory_delta = (
-            (as_float(_deep_get(end, ["memory", "virtual", "used"])) or 0.0)
-            - (as_float(_deep_get(start, ["memory", "virtual", "used"])) or 0.0)
+        memory_delta = (as_float(_deep_get(end, ["memory", "virtual", "used"])) or 0.0) - (
+            as_float(_deep_get(start, ["memory", "virtual", "used"])) or 0.0
         )
         if memory_delta > 0:
             memory_by_activity[activity] = memory_by_activity.get(activity, 0.0) + memory_delta
 
-        sent_delta = (
-            (as_float(_deep_get(end, ["network", "netio_sum", "bytes_sent"])) or 0.0)
-            - (as_float(_deep_get(start, ["network", "netio_sum", "bytes_sent"])) or 0.0)
+        sent_delta = (as_float(_deep_get(end, ["network", "netio_sum", "bytes_sent"])) or 0.0) - (
+            as_float(_deep_get(start, ["network", "netio_sum", "bytes_sent"])) or 0.0
         )
-        recv_delta = (
-            (as_float(_deep_get(end, ["network", "netio_sum", "bytes_recv"])) or 0.0)
-            - (as_float(_deep_get(start, ["network", "netio_sum", "bytes_recv"])) or 0.0)
+        recv_delta = (as_float(_deep_get(end, ["network", "netio_sum", "bytes_recv"])) or 0.0) - (
+            as_float(_deep_get(start, ["network", "netio_sum", "bytes_recv"])) or 0.0
         )
         network_total = max(0.0, sent_delta) + max(0.0, recv_delta)
         if network_total > 0:
@@ -111,14 +107,17 @@ def _build_telemetry_chart_data(tasks: Iterable[Dict[str, Any]]) -> List[Tuple[s
 
     mem_rows = sorted(memory_by_activity.items(), key=lambda x: x[1], reverse=True)[:5]
     if mem_rows:
-        charts.append(
-            ("Largest Memory Growth Activities", [n for n, _ in mem_rows], [v for _, v in mem_rows], "Bytes")
-        )
+        charts.append(("Largest Memory Growth Activities", [n for n, _ in mem_rows], [v for _, v in mem_rows], "Bytes"))
 
     net_rows = sorted(network_by_activity.items(), key=lambda x: x[1], reverse=True)[:5]
     if net_rows:
         charts.append(
-            ("Most Network-Active Activities (Bytes Moved)", [n for n, _ in net_rows], [v for _, v in net_rows], "Bytes")
+            (
+                "Most Network-Active Activities (Bytes Moved)",
+                [n for n, _ in net_rows],
+                [v for _, v in net_rows],
+                "Bytes",
+            )
         )
 
     gpu_rows = sorted(gpu_used_by_activity.items(), key=lambda x: x[1], reverse=True)[:5]
@@ -136,7 +135,9 @@ def _build_plot_data(
     """Build chart definitions for timing/resource summaries."""
     slowest = [r for r in transformations if r.get("elapsed_avg") is not None]
     slowest = sorted(slowest, key=lambda r: float(r.get("elapsed_avg") or 0.0), reverse=True)[:5]
-    fastest = [r for r in transformations if r.get("elapsed_avg") is not None and float(r.get("elapsed_avg") or 0.0) > 0]
+    fastest = [
+        r for r in transformations if r.get("elapsed_avg") is not None and float(r.get("elapsed_avg") or 0.0) > 0
+    ]
     fastest = sorted(fastest, key=lambda r: float(r.get("elapsed_avg") or 0.0))[:5]
 
     io_by_activity: Dict[str, float] = {}
@@ -413,7 +414,19 @@ def _render_object_details_table(lines: List[str], styles: Dict[str, Any]):
         story.append(Paragraph("No object detail rows available.", styles["body"]))
         return story
 
-    table = Table(rows, colWidths=[0.65 * inch, 1.35 * inch, 0.45 * inch, 0.6 * inch, 0.6 * inch, 0.75 * inch, 1.0 * inch, 1.4 * inch])
+    table = Table(
+        rows,
+        colWidths=[
+            0.65 * inch,
+            1.35 * inch,
+            0.45 * inch,
+            0.6 * inch,
+            0.6 * inch,
+            0.75 * inch,
+            1.0 * inch,
+            1.4 * inch,
+        ],
+    )
     table.setStyle(
         TableStyle(
             [
@@ -598,10 +611,14 @@ def _build_pdf_document(
     base = getSampleStyleSheet()
     styles = {
         "title": ParagraphStyle("title", parent=base["Heading1"], fontSize=18, textColor=colors.HexColor("#0f172a")),
-        "subtitle": ParagraphStyle("subtitle", parent=base["Normal"], fontSize=10, textColor=colors.HexColor("#334155")),
+        "subtitle": ParagraphStyle(
+            "subtitle", parent=base["Normal"], fontSize=10, textColor=colors.HexColor("#334155")
+        ),
         "h2": ParagraphStyle("h2", parent=base["Heading2"], fontSize=13, textColor=colors.HexColor("#0f172a")),
         "h3": ParagraphStyle("h3", parent=base["Heading3"], fontSize=11, textColor=colors.HexColor("#0f172a")),
-        "body": ParagraphStyle("body", parent=base["Normal"], fontSize=9, leading=12, textColor=colors.HexColor("#111827")),
+        "body": ParagraphStyle(
+            "body", parent=base["Normal"], fontSize=9, leading=12, textColor=colors.HexColor("#111827")
+        ),
         "b1": ParagraphStyle("b1", parent=base["Normal"], fontSize=9, leading=12, leftIndent=10, bulletIndent=0),
         "b2": ParagraphStyle("b2", parent=base["Normal"], fontSize=9, leading=12, leftIndent=24, bulletIndent=12),
         "b3": ParagraphStyle("b3", parent=base["Normal"], fontSize=9, leading=12, leftIndent=38, bulletIndent=24),
