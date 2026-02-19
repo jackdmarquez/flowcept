@@ -8,6 +8,7 @@ from flowcept.webservice.routers.datasets import router as datasets_router
 from flowcept.webservice.routers.health import router as health_router
 from flowcept.webservice.routers.models import router as models_router
 from flowcept.webservice.routers.objects import router as objects_router
+from flowcept.webservice.routers.query import router as query_router
 from flowcept.webservice.routers.tasks import router as tasks_router
 from flowcept.webservice.routers.workflows import router as workflows_router
 
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
     app.include_router(objects_router, prefix="/api/v1")
     app.include_router(datasets_router, prefix="/api/v1")
     app.include_router(models_router, prefix="/api/v1")
+    app.include_router(query_router, prefix="/api/v1")
 
     return app
 

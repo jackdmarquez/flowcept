@@ -120,6 +120,15 @@ Same query model as above, plus `include_data`.
 - `GET /api/v1/models/{object_id}/download`
 - `POST /api/v1/models/query`
 
+### POST /api/v1/query/{scope}
+
+Unified scoped read-only query endpoint.
+
+- `scope`: `workflows | tasks | objects | models | datasets`
+- Uses the same query body model as other `/query` routes.
+- `models` and `datasets` scopes enforce fixed type filters.
+- Rejects unsupported filter operators.
+
 ## Status codes
 
 - `200`: success

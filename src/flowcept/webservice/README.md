@@ -85,6 +85,12 @@ All API routes are mounted under:
 - `GET /api/v1/models/{object_id}/download`
 - `POST /api/v1/models/query`
 
+### Unified scoped query
+
+- `POST /api/v1/query/{scope}`
+- Supported `scope`: `workflows | tasks | objects | models | datasets`
+- `models` and `datasets` enforce fixed base filters (`type=ml_model` and `type=dataset`)
+
 ## Query model
 
 Advanced `POST /query` endpoints share a common request model:

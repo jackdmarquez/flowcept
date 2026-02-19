@@ -43,14 +43,82 @@ class FakeDB:
                 "task_id": "t3",
                 "type": "ml_model",
                 "version": 2,
-                "custom_metadata": {"k": "v2"},
+                "custom_metadata": {"k": "v2", "loss": 0.42},
+                "data": b"payload-2",
+                "created_at": "2025-01-01T00:00:00",
+            },
+            {
+                "object_id": "o3",
+                "workflow_id": "wf-1",
+                "task_id": "t2",
+                "type": "ml_model",
+                "version": 3,
+                "custom_metadata": {"k": "v3", "loss": 0.11},
                 "data": b"payload-2",
                 "created_at": "2025-01-01T00:00:00",
             },
         ]
 
+    @staticmethod
+    def _nested_get(item, field):
+        value = item
+        for part in field.split("."):
+            if not isinstance(value, dict):
+                return None
+            value = value.get(part)
+        return value
+
+    @classmethod
+    def _matches_filter(cls, item, filter_doc):
+        if not filter_doc:
+            return True
+
+        for key, value in filter_doc.items():
+            if key == "$and":
+                return all(cls._matches_filter(item, clause) for clause in value)
+            if key == "$or":
+                return any(cls._matches_filter(item, clause) for clause in value)
+
+            field_value = cls._nested_get(item, key)
+            if isinstance(value, dict):
+                for op, expected in value.items():
+                    if op == "$exists":
+                        exists = field_value is not None
+                        if bool(expected) != exists:
+                            return False
+                    elif op == "$eq":
+                        if field_value != expected:
+                            return False
+                    elif op == "$ne":
+                        if field_value == expected:
+                            return False
+                    elif op == "$in":
+                        if field_value not in expected:
+                            return False
+                    elif op == "$nin":
+                        if field_value in expected:
+                            return False
+                    elif op == "$gt":
+                        if field_value is None or not field_value > expected:
+                            return False
+                    elif op == "$gte":
+                        if field_value is None or not field_value >= expected:
+                            return False
+                    elif op == "$lt":
+                        if field_value is None or not field_value < expected:
+                            return False
+                    elif op == "$lte":
+                        if field_value is None or not field_value <= expected:
+                            return False
+                    else:
+                        raise ValueError(f"Unsupported fake operator in test DB: {op}")
+            else:
+                if field_value != value:
+                    return False
+        return True
+
     def workflow_query(self, filter):
-        return [wf for wf in self.workflows if all(wf.get(k) == v for k, v in filter.items())]
+        return [wf for wf in self.workflows if self._matches_filter(wf, filter)]
 
     def get_workflow_object(self, workflow_id):
         for wf in self.workflows:
@@ -62,13 +130,34 @@ class FakeDB:
         collection = kwargs.get("collection")
         filter_ = kwargs.get("filter") or {}
         limit = kwargs.get("limit", 0)
+        projection = kwargs.get("projection")
+        sort = kwargs.get("sort")
 
         if collection == "workflows":
-            rs = [wf for wf in self.workflows if all(wf.get(k) == v for k, v in filter_.items())]
+            rs = [wf for wf in self.workflows if self._matches_filter(wf, filter_)]
+            if sort:
+                for field, order in reversed(sort):
+                    rs = sorted(rs, key=lambda item: self._nested_get(item, field), reverse=(order == -1))
+            if projection:
+                rs = [{k: v for k, v in row.items() if k in projection} for row in rs]
             return rs[:limit] if limit else rs
 
         if collection == "objects":
-            rs = [obj for obj in self.objects if all(obj.get(k) == v for k, v in filter_.items())]
+            rs = [obj for obj in self.objects if self._matches_filter(obj, filter_)]
+            if sort:
+                for field, order in reversed(sort):
+                    rs = sorted(rs, key=lambda item: self._nested_get(item, field), reverse=(order == -1))
+            if projection:
+                rs = [{k: v for k, v in row.items() if k in projection} for row in rs]
+            return rs[:limit] if limit else rs
+
+        if collection == "tasks":
+            rs = [task for task in self.tasks if self._matches_filter(task, filter_)]
+            if sort:
+                for field, order in reversed(sort):
+                    rs = sorted(rs, key=lambda item: self._nested_get(item, field), reverse=(order == -1))
+            if projection:
+                rs = [{k: v for k, v in row.items() if k in projection} for row in rs]
             return rs[:limit] if limit else rs
 
         return []
@@ -82,7 +171,7 @@ class FakeDB:
         aggregation=None,
         remove_json_unserializables=True,
     ):
-        rs = [task for task in self.tasks if all(task.get(k) == v for k, v in (filter or {}).items())]
+        rs = [task for task in self.tasks if self._matches_filter(task, filter or {})]
 
         if sort:
             for field, order in reversed(sort):
@@ -94,7 +183,7 @@ class FakeDB:
         return rs[:limit] if limit else rs
 
     def blob_object_query(self, filter):
-        return [obj for obj in self.objects if all(obj.get(k) == v for k, v in (filter or {}).items())]
+        return [obj for obj in self.objects if self._matches_filter(obj, filter or {})]
 
     def get_blob_object(self, object_id, version=None):
         if version is None:
@@ -266,12 +355,12 @@ def test_objects_list_get_version_history_and_query():
 
     rs = client.get("/api/v1/objects", params={"workflow_id": "wf-1", "limit": 10})
     assert rs.status_code == 200
-    assert rs.json()["count"] == 1
+    assert rs.json()["count"] == 2
     assert "data" not in rs.json()["items"][0]
 
     rs = client.get("/api/v1/objects", params={"limit": 10})
     assert rs.status_code == 200
-    assert [item["object_id"] for item in rs.json()["items"]] == ["o2", "o1"]
+    assert [item["object_id"] for item in rs.json()["items"]] == ["o2", "o3", "o1"]
 
     rs = client.get("/api/v1/objects/o1")
     assert rs.status_code == 200
@@ -364,7 +453,7 @@ def test_models_routes():
 
     rs = client.get("/api/v1/models")
     assert rs.status_code == 200
-    assert rs.json()["count"] == 1
+    assert rs.json()["count"] == 2
     assert rs.json()["items"][0]["type"] == "ml_model"
 
     rs = client.get("/api/v1/models/o2")
@@ -381,8 +470,107 @@ def test_models_routes():
 
     rs = client.post("/api/v1/models/query", json={"filter": {}, "limit": 10})
     assert rs.status_code == 200
-    assert rs.json()["count"] == 1
+    assert rs.json()["count"] == 2
     assert rs.json()["items"][0]["type"] == "ml_model"
 
     rs = client.get("/api/v1/models/o1")
     assert rs.status_code == 404
+
+
+def test_unified_scoped_query_models_supports_exists_and_nested_sort():
+    client, _ = build_client()
+
+    rs = client.post(
+        "/api/v1/query/models",
+        json={
+            "filter": {
+                "workflow_id": "wf-1",
+                "custom_metadata.loss": {"$exists": True},
+            },
+            "sort": [{"field": "custom_metadata.loss", "order": 1}],
+            "projection": ["object_id", "type", "custom_metadata"],
+            "limit": 1,
+        },
+    )
+    assert rs.status_code == 200
+    body = rs.json()
+    assert body["count"] == 1
+    assert body["items"][0]["object_id"] == "o3"
+    assert body["items"][0]["type"] == "ml_model"
+    assert body["items"][0]["custom_metadata"]["loss"] == 0.11
+
+
+def test_unified_scoped_query_workflows_scope():
+    client, _ = build_client()
+    rs = client.post(
+        "/api/v1/query/workflows",
+        json={
+            "filter": {"campaign_id": "c1"},
+            "projection": ["workflow_id", "campaign_id"],
+            "limit": 10,
+        },
+    )
+    assert rs.status_code == 200
+    body = rs.json()
+    assert body["count"] == 1
+    assert body["items"][0]["workflow_id"] == "wf-1"
+
+
+def test_unified_scoped_query_tasks_scope():
+    client, _ = build_client()
+    rs = client.post(
+        "/api/v1/query/tasks",
+        json={
+            "filter": {"workflow_id": "wf-1"},
+            "sort": [{"field": "started_at", "order": -1}],
+            "projection": ["task_id", "started_at"],
+            "limit": 1,
+        },
+    )
+    assert rs.status_code == 200
+    body = rs.json()
+    assert body["count"] == 1
+    assert body["items"][0]["task_id"] == "t2"
+
+
+def test_unified_scoped_query_objects_scope():
+    client, _ = build_client()
+    rs = client.post(
+        "/api/v1/query/objects",
+        json={
+            "filter": {"type": "dataset"},
+            "projection": ["object_id", "type"],
+            "limit": 10,
+        },
+    )
+    assert rs.status_code == 200
+    body = rs.json()
+    assert body["count"] == 1
+    assert body["items"][0]["object_id"] == "o1"
+    assert body["items"][0]["type"] == "dataset"
+
+
+def test_unified_scoped_query_datasets_scope_enforces_type():
+    client, _ = build_client()
+    rs = client.post(
+        "/api/v1/query/datasets",
+        json={
+            "filter": {"type": "ml_model"},
+            "limit": 10,
+        },
+    )
+    assert rs.status_code == 200
+    assert rs.json()["count"] == 0
+
+
+def test_unified_scoped_query_rejects_unsupported_operator():
+    client, _ = build_client()
+    rs = client.post(
+        "/api/v1/query/objects",
+        json={
+            "filter": {"task_id": {"$where": "this.task_id == 't1'"}},
+            "limit": 10,
+        },
+    )
+    assert rs.status_code == 400
+    assert "Unsupported filter operator" in rs.json()["detail"]
