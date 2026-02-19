@@ -1,6 +1,7 @@
 """Document DB interaction module."""
 
 import os
+import hashlib
 from typing import List, Dict, Tuple, Any
 import io
 import json
@@ -121,6 +122,8 @@ class MongoDBDAO(DocumentDBDAO):
             self._obj_collection.create_index(TaskObject.task_id_field(), unique=False)
         if "campaign_id" not in existing_indices:
             self._obj_collection.create_index("campaign_id")
+        if "data_sha256" not in existing_indices:
+            self._obj_collection.create_index("data_sha256", unique=False)
 
         # Creating object_history collection indices:
         existing_history_indices = [list(x["key"].keys()) for x in self._obj_history_collection.list_indexes()]
@@ -467,6 +470,27 @@ class MongoDBDAO(DocumentDBDAO):
         """Get timezone-aware UTC timestamp."""
         return datetime.now(timezone.utc)
 
+    @staticmethod
+    def _payload_to_bytes(payload):
+        """Convert supported payload types to bytes for hashing/size metadata."""
+        if isinstance(payload, bytes):
+            return payload
+        if isinstance(payload, bytearray):
+            return bytes(payload)
+        if isinstance(payload, memoryview):
+            return payload.tobytes()
+        return None
+
+    @staticmethod
+    def _build_payload_hash_metadata(payload_bytes):
+        """Return hash metadata for a bytes payload."""
+        if payload_bytes is None:
+            return {}
+        return {
+            "data_sha256": hashlib.sha256(payload_bytes).hexdigest(),
+            "data_hash_algo": "sha256",
+        }
+
     def _build_blob_storage_doc(self, object_payload, save_data_in_collection=False, pickle_=False):
         """Build the storage-specific blob document fields."""
         obj_doc = {}
@@ -476,6 +500,7 @@ class MongoDBDAO(DocumentDBDAO):
                 blob = pickle.dumps(object_payload)
                 obj_doc["pickle"] = True
             obj_doc["data"] = blob
+            obj_doc.update(MongoDBDAO._build_payload_hash_metadata(MongoDBDAO._payload_to_bytes(blob)))
             try:
                 obj_doc["object_size_bytes"] = int(len(blob))
             except Exception:
@@ -487,6 +512,8 @@ class MongoDBDAO(DocumentDBDAO):
             fs = GridFS(self._db)
             file_id = fs.put(object_payload)
             obj_doc["grid_fs_file_id"] = file_id
+            payload_bytes = MongoDBDAO._payload_to_bytes(object_payload)
+            obj_doc.update(MongoDBDAO._build_payload_hash_metadata(payload_bytes))
             size_bytes = None
             try:
                 size_bytes = int(len(object_payload))
@@ -519,6 +546,8 @@ class MongoDBDAO(DocumentDBDAO):
             "type": doc.get("type"),
             "custom_metadata": doc.get("custom_metadata"),
             "object_size_bytes": doc.get("object_size_bytes"),
+            "data_sha256": doc.get("data_sha256"),
+            "data_hash_algo": doc.get("data_hash_algo"),
             "storage_type": storage_type,
             "pickle": bool(doc.get("pickle", False)),
         }
@@ -539,6 +568,8 @@ class MongoDBDAO(DocumentDBDAO):
             "type": latest_doc.get("type"),
             "custom_metadata": latest_doc.get("custom_metadata"),
             "object_size_bytes": latest_doc.get("object_size_bytes"),
+            "data_sha256": latest_doc.get("data_sha256"),
+            "data_hash_algo": latest_doc.get("data_hash_algo"),
         }
         if "data" in latest_doc:
             history_doc["data"] = latest_doc["data"]
@@ -862,6 +893,27 @@ class MongoDBDAO(DocumentDBDAO):
                 raise ValueError(f"Object payload not found in GridFS for object_id={object_id}, version={version}.")
             doc["data"] = data
         return doc
+
+    def get_blob_object_metadata_doc(self, object_id, version=None):
+        """Get blob metadata by object id and optional version without loading payload bytes."""
+        latest_doc = self._obj_collection.find_one({"object_id": object_id})
+        if latest_doc is None:
+            raise ValueError(f"Object not found for object_id={object_id}.")
+
+        if version is None:
+            doc = latest_doc
+        else:
+            version = int(version)
+            if int(latest_doc.get("version", -1)) == version:
+                doc = latest_doc
+            else:
+                doc = self._obj_history_collection.find_one({"object_id": object_id, "version": version})
+            if doc is None:
+                raise ValueError(f"Object not found for object_id={object_id}, version={version}.")
+
+        metadata_doc = dict(doc)
+        metadata_doc.pop("data", None)
+        return metadata_doc
 
     def get_object_history(self, object_id) -> List[Dict]:
         """Get metadata for all versions of an object (latest first)."""

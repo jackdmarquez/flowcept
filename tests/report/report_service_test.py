@@ -194,3 +194,86 @@ class ReportServiceTests(unittest.TestCase):
             assert "## Per-activity Resource Usage" in content
             assert "Most IO-heavy Activities (Read + Write):" in content
             assert "Most CPU-active Activities:" in content
+
+    def test_generate_report_pdf_from_records(self):
+        try:
+            import matplotlib  # noqa: F401
+            import reportlab  # noqa: F401
+        except ModuleNotFoundError:
+            self.skipTest("PDF dependencies are not installed.")
+
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "PROVENANCE_REPORT.pdf"
+            stats = Flowcept.generate_report(
+                report_type="provenance_report",
+                records=_sample_records_with_telemetry_and_io(),
+                format="pdf",
+                output_path=str(output),
+            )
+            assert output.exists()
+            assert stats["input_mode"] == "records"
+            assert stats["format"] == "pdf"
+            assert stats["report_type"] == "provenance_report"
+            assert stats.get("plots", 0) >= 1
+
+    def test_generate_report_rejects_mismatched_card_pdf(self):
+        with self.assertRaises(ValueError):
+            Flowcept.generate_report(
+                report_type="provenance_card",
+                format="pdf",
+                records=_sample_records(),
+            )
+
+    def test_generate_report_lists_up_to_five_latest_objects_per_type(self):
+        records = [
+            {
+                "type": "workflow",
+                "workflow_id": "wf-obj-1",
+                "campaign_id": "camp-obj-1",
+                "name": "object_demo",
+            }
+        ]
+
+        for i in range(6):
+            records.append(
+                {
+                    "object_id": f"model-{i}",
+                    "workflow_id": "wf-obj-1",
+                    "task_id": f"task-{i}",
+                    "type": "ml_model",
+                    "version": i,
+                    "utc_timestamp": float(100 + i),
+                    "object_size_bytes": 1024 + i,
+                    "storage_type": "gridfs",
+                    "custom_metadata": {"loss": round(i * 0.1, 3)},
+                }
+            )
+
+        for i in range(2):
+            records.append(
+                {
+                    "object_id": f"dataset-{i}",
+                    "workflow_id": "wf-obj-1",
+                    "task_id": f"dataset-task-{i}",
+                    "type": "dataset",
+                    "version": i,
+                    "utc_timestamp": float(200 + i),
+                    "object_size_bytes": 2048 + i,
+                    "storage_type": "in_object",
+                    "custom_metadata": {"source": f"input-{i}.csv"},
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "PROVENANCE_CARD.md"
+            stats = Flowcept.generate_report(records=records, output_path=str(output))
+            assert output.exists()
+            assert stats["input_mode"] == "records"
+            content = output.read_text(encoding="utf-8")
+
+            assert "- **Models:**" in content
+            assert "- **Datasets:**" in content
+            assert "`custom_metadata`:" in content
+            assert "model-5" in content
+            assert "model-0" not in content
+            assert "Latest 5" not in content

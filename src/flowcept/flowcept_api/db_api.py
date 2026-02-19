@@ -312,6 +312,89 @@ class DBAPI(object):
         """Backward-compatible alias to ``get_object_history``."""
         return self.get_object_history(object_id)
 
+    def get_blob_fingerprint(self, object_id, version=None) -> Dict:
+        """Get a lightweight blob fingerprint for equality checks.
+
+        Parameters
+        ----------
+        object_id : str
+            Object identifier.
+        version : int or None, optional
+            ``None`` for latest version, integer for an exact version.
+
+        Returns
+        -------
+        dict
+            Metadata-only fingerprint with hash and size fields.
+        """
+        dao = DBAPI._dao()
+        if hasattr(dao, "get_blob_object_metadata_doc"):
+            doc = dao.get_blob_object_metadata_doc(object_id=object_id, version=version)
+        else:
+            # Fallback for backends without dedicated metadata retrieval.
+            doc = self.get_blob_object(object_id=object_id, version=version).to_dict()
+            doc.pop("data", None)
+
+        return {
+            "object_id": doc.get("object_id"),
+            "version": int(doc.get("version", 0)),
+            "object_size_bytes": doc.get("object_size_bytes"),
+            "data_sha256": doc.get("data_sha256"),
+            "data_hash_algo": doc.get("data_hash_algo"),
+            "storage_type": "in_object" if "grid_fs_file_id" not in doc else "gridfs",
+        }
+
+    def blob_objects_equal(
+        self,
+        object_id_a,
+        object_id_b,
+        version_a=None,
+        version_b=None,
+        fallback_to_payload=False,
+    ) -> bool:
+        """Compare two blob objects by persisted payload identity metadata.
+
+        Parameters
+        ----------
+        object_id_a : str
+            First object identifier.
+        object_id_b : str
+            Second object identifier.
+        version_a : int or None, optional
+            Version of the first object. ``None`` means latest.
+        version_b : int or None, optional
+            Version of the second object. ``None`` means latest.
+        fallback_to_payload : bool, optional
+            If ``True`` and hash metadata is unavailable, compare loaded payload bytes.
+
+        Returns
+        -------
+        bool
+            ``True`` when objects are equivalent under the selected strategy, else ``False``.
+        """
+        fp_a = self.get_blob_fingerprint(object_id=object_id_a, version=version_a)
+        fp_b = self.get_blob_fingerprint(object_id=object_id_b, version=version_b)
+
+        hash_a = fp_a.get("data_sha256")
+        hash_b = fp_b.get("data_sha256")
+        algo_a = fp_a.get("data_hash_algo")
+        algo_b = fp_b.get("data_hash_algo")
+
+        if hash_a and hash_b and algo_a == algo_b:
+            return hash_a == hash_b
+
+        size_a = fp_a.get("object_size_bytes")
+        size_b = fp_b.get("object_size_bytes")
+        if size_a is not None and size_b is not None and size_a != size_b:
+            return False
+
+        if not fallback_to_payload:
+            return False
+
+        data_a = getattr(self.get_blob_object(object_id_a, version=version_a), "data", None)
+        data_b = getattr(self.get_blob_object(object_id_b, version=version_b), "data", None)
+        return data_a == data_b
+
     def get_tasks_recursive(self, workflow_id, max_depth=999, mapping=None):
         """
         Retrieve all tasks recursively for a given workflow ID.

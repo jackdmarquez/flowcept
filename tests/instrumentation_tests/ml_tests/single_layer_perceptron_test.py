@@ -301,25 +301,43 @@ class SingleLayerPerceptronTests(unittest.TestCase):
 
         self.provenance_card_generation(Flowcept.current_workflow_id)
 
-
     def provenance_card_generation(self, workflow_id):
-        card_path = f"./PROVENANCE_CARD_{workflow_id}.md"
-        if os.path.exists(card_path):
-            os.remove(card_path)
-        stats = Flowcept.generate_report(
+        card_md_path = f"./PROVENANCE_CARD_{workflow_id}.md"
+        if os.path.exists(card_md_path):
+            os.remove(card_md_path)
+        md_stats = Flowcept.generate_report(
             report_type="provenance_card",
             format="markdown",
-            output_path=card_path,
+            output_path=card_md_path,
             workflow_id=workflow_id,
         )
-        assert os.path.exists(card_path)
-        assert stats["report_type"] == "provenance_card"
-        assert stats["format"] == "markdown"
-        with open(card_path, "r", encoding="utf-8") as f:
+        assert os.path.exists(card_md_path)
+        assert md_stats["report_type"] == "provenance_card"
+        assert md_stats["format"] == "markdown"
+        with open(card_md_path, "r", encoding="utf-8") as f:
             card_text = f.read()
         assert "Perceptron Train" in card_text
         assert "## Aggregation Method" in card_text
         assert "## Object Artifacts Summary" in card_text
+
+        try:
+            import matplotlib  # noqa: F401
+            import reportlab  # noqa: F401
+        except ModuleNotFoundError:
+            return
+
+        report_pdf_path = f"./PROVENANCE_REPORT_{workflow_id}.pdf"
+        if os.path.exists(report_pdf_path):
+            os.remove(report_pdf_path)
+        pdf_stats = Flowcept.generate_report(
+            report_type="provenance_report",
+            format="pdf",
+            output_path=report_pdf_path,
+            workflow_id=workflow_id,
+        )
+        assert os.path.exists(report_pdf_path)
+        assert pdf_stats["report_type"] == "provenance_report"
+        assert pdf_stats["format"] == "pdf"
 
 
     def model_metadata_asserts(self, reloaded_torch_model, torch_model_object_id):

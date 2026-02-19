@@ -1,7 +1,6 @@
 import json
-import pandas as pd
 from flowcept.agents.agents_utils import ToolResult, build_llm_model
-from flowcept.agents.flowcept_ctx_manager import mcp_flowcept, ctx_manager
+from flowcept.agents.flowcept_ctx_manager import EMPTY_DF_MESSAGE, get_df_context, mcp_flowcept, ctx_manager
 from flowcept.agents.prompts.in_memory_query_prompts import (
     generate_plot_code_prompt,
     extract_or_fix_json_code_prompt,
@@ -18,6 +17,27 @@ from flowcept.agents.tools.in_memory_queries.pandas_agent_utils import (
     format_result_df,
     summarize_df,
 )
+
+
+@mcp_flowcept.tool()
+def execute_generated_df_code(user_code: str) -> ToolResult:
+    """
+    Execute externally generated pandas code against the current agent DataFrame.
+
+    Parameters
+    ----------
+    user_code : str
+        Explicit pandas code expected to assign output to ``result``.
+
+    Returns
+    -------
+    ToolResult
+        Delegates to ``run_df_code`` and returns its execution result.
+    """
+    df, _, _, _ = get_df_context()
+    if df is None or not len(df):
+        return ToolResult(code=404, result=EMPTY_DF_MESSAGE)
+    return run_df_code(user_code=user_code, df=df)
 
 
 @mcp_flowcept.tool()
@@ -78,13 +98,9 @@ def run_df_query(llm, query: str, plot=False) -> ToolResult:
     >>> run_df_query(llm, "Show sales trend as a line chart", plot=True)
     ToolResult(code=301, result={'result_df': '...', 'plot_code': 'plt.plot(...)'})
     """
-    ctx = mcp_flowcept.get_context()
-    df: pd.DataFrame = ctx.request_context.lifespan_context.df
-    schema = ctx.request_context.lifespan_context.tasks_schema
-    value_examples = ctx.request_context.lifespan_context.value_examples
-    custom_user_guidance = ctx.request_context.lifespan_context.custom_guidance
+    df, schema, value_examples, custom_user_guidance = get_df_context()
     if df is None or not len(df):
-        return ToolResult(code=404, result="Current df is empty or null.")
+        return ToolResult(code=404, result=EMPTY_DF_MESSAGE)
     elif "save" in query:
         return save_df(df, schema, value_examples)
     elif "result = df" in query:

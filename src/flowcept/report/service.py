@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 from flowcept.report.aggregations import group_transformations, summarize_objects
 from flowcept.report.loaders import load_records_from_db, read_jsonl, split_records
 from flowcept.report.renderers.provenance_card_markdown import render_provenance_card_markdown
+from flowcept.report.renderers.provenance_report_pdf import render_provenance_report_pdf
 
 
 def _resolve_input_mode(
@@ -73,13 +74,17 @@ def generate_report(
         campaign_id=campaign_id,
     )
 
-    if report_type != "provenance_card":
+    if report_type not in {"provenance_card", "provenance_report"}:
         raise ValueError(f"Unsupported report_type: {report_type}")
-    if format != "markdown":
+    if format not in {"markdown", "pdf"}:
         raise ValueError(f"Unsupported format: {format}")
+    if report_type == "provenance_card" and format != "markdown":
+        raise ValueError("provenance_card supports only markdown format.")
+    if report_type == "provenance_report" and format != "pdf":
+        raise ValueError("provenance_report supports only pdf format.")
 
     if output_path is None:
-        output_path = "PROVENANCE_CARD.md"
+        output_path = "PROVENANCE_CARD.md" if report_type == "provenance_card" else "PROVENANCE_REPORT.pdf"
     output = Path(output_path)
 
     skipped_lines = 0
@@ -96,12 +101,20 @@ def generate_report(
 
     transformations = group_transformations(dataset.get("tasks", []))
     object_summary = summarize_objects(dataset.get("objects", []))
-    render_stats = render_provenance_card_markdown(
-        dataset=dataset,
-        transformations=transformations,
-        object_summary=object_summary,
-        output_path=output,
-    )
+    if format == "markdown":
+        render_stats = render_provenance_card_markdown(
+            dataset=dataset,
+            transformations=transformations,
+            object_summary=object_summary,
+            output_path=output,
+        )
+    else:
+        render_stats = render_provenance_report_pdf(
+            dataset=dataset,
+            transformations=transformations,
+            object_summary=object_summary,
+            output_path=output,
+        )
     return {
         "report_type": report_type,
         "format": format,

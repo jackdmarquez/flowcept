@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import datetime
+import json
 import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -124,6 +125,152 @@ def _safe_sample(value: Any, max_len: int = 80) -> str:
     if len(text) > max_len:
         return text[: max_len - 3] + "..."
     return text
+
+
+def _format_json_like(value: Any, max_len: int = 220) -> str:
+    """Render a compact JSON-like string for metadata display."""
+    safe = sanitize_json_like(value)
+    try:
+        text = json.dumps(safe, sort_keys=True, default=str)
+    except Exception:
+        text = str(safe)
+    if len(text) > max_len:
+        return text[: max_len - 3] + "..."
+    return text
+
+
+def _format_scalar_multiline(value: Any) -> List[str]:
+    """Format scalar metadata values, preserving multiline strings."""
+    safe = sanitize_json_like(value)
+    if isinstance(safe, str):
+        if "\n" not in safe:
+            return [safe]
+        lines = ["|"]
+        for row in safe.splitlines():
+            lines.append(f"  {row}")
+        return lines
+    if safe is None:
+        return ["null"]
+    if isinstance(safe, bool):
+        return ["true" if safe else "false"]
+    return [str(safe)]
+
+
+def _format_nested_metadata_lines(value: Any, indent: int = 0) -> List[str]:
+    """Render nested metadata using an indented YAML-like representation."""
+    safe = sanitize_json_like(value)
+    pad = " " * indent
+
+    if isinstance(safe, dict):
+        if not safe:
+            return [f"{pad}{{}}"]
+        lines: List[str] = []
+        for key in sorted(safe.keys(), key=str):
+            item = safe[key]
+            if isinstance(item, (dict, list)):
+                lines.append(f"{pad}{key}:")
+                lines.extend(_format_nested_metadata_lines(item, indent=indent + 2))
+                continue
+            scalar_lines = _format_scalar_multiline(item)
+            if len(scalar_lines) == 1:
+                lines.append(f"{pad}{key}: {scalar_lines[0]}")
+                continue
+            lines.append(f"{pad}{key}: {scalar_lines[0]}")
+            for row in scalar_lines[1:]:
+                lines.append(f"{pad}{row}")
+        return lines
+
+    if isinstance(safe, list):
+        if not safe:
+            return [f"{pad}[]"]
+        lines = []
+        for item in safe:
+            if isinstance(item, (dict, list)):
+                lines.append(f"{pad}-")
+                lines.extend(_format_nested_metadata_lines(item, indent=indent + 2))
+                continue
+            scalar_lines = _format_scalar_multiline(item)
+            if len(scalar_lines) == 1:
+                lines.append(f"{pad}- {scalar_lines[0]}")
+                continue
+            lines.append(f"{pad}- {scalar_lines[0]}")
+            for row in scalar_lines[1:]:
+                lines.append(f"{pad}  {row}")
+        return lines
+
+    scalar_lines = _format_scalar_multiline(safe)
+    return [f"{pad}{row}" for row in scalar_lines]
+
+
+def _extract_object_timestamp(obj: Dict[str, Any]) -> Optional[float]:
+    """Extract best-effort object timestamp from common object record fields."""
+    for key in ["updated_at", "utc_timestamp", "timestamp", "ended_at", "started_at", "created_at", "submitted_at"]:
+        raw = obj.get(key)
+        value = as_float(raw)
+        if value is not None:
+            return value
+        if isinstance(raw, dict):
+            value = as_float(raw.get("$date"))
+            if value is not None:
+                return value
+    return None
+
+
+def _object_type_header_label(obj_type: str) -> str:
+    """Return human-friendly object type header labels."""
+    normalized = obj_type.lower().strip()
+    if normalized in {"ml_model", "model"}:
+        return "Models"
+    if normalized in {"dataset", "data_set"}:
+        return "Datasets"
+    return f"{obj_type.replace('_', ' ').title()}s"
+
+
+def _build_object_details_lines(objects: List[Dict[str, Any]]) -> List[str]:
+    """Build markdown lines for up to five latest object entries per type."""
+    lines: List[str] = ["### Object Details by Type"]
+    if not objects:
+        lines.append("- No object records were available.")
+        return lines
+
+    grouped: Dict[str, List[Tuple[int, Dict[str, Any]]]] = defaultdict(list)
+    for idx, obj in enumerate(objects):
+        obj_type = _to_str(obj.get("type"))
+        grouped[obj_type].append((idx, obj))
+
+    for obj_type in sorted(grouped.keys()):
+        label = _object_type_header_label(obj_type)
+        lines.append(f"- **{label}:**")
+        ranked = sorted(
+            grouped[obj_type],
+            key=lambda pair: (
+                _extract_object_timestamp(pair[1]) if _extract_object_timestamp(pair[1]) is not None else float("-inf"),
+                as_float(pair[1].get("version")) if as_float(pair[1].get("version")) is not None else float("-inf"),
+                pair[0],
+            ),
+            reverse=True,
+        )
+        for _, obj in ranked[:5]:
+            lines.append(
+                "  - "
+                f"`{_to_str(obj.get('object_id'))}` "
+                f"(version=`{_to_str(obj.get('version'), default='-')}`, "
+                f"storage=`{_to_str(obj.get('storage_type'), default='-')}`, "
+                f"size=`{_fmt_bytes(as_float(obj.get('object_size_bytes')))}" + "`)"
+            )
+            lines.append(
+                "    <br> "
+                f"`task_id`: `{_to_str(obj.get('task_id'), default='-')}`; "
+                f"`workflow_id`: `{_to_str(obj.get('workflow_id'), default='-')}`; "
+                f"`timestamp`: `{fmt_timestamp_utc(_extract_object_timestamp(obj))}`"
+            )
+            lines.append("    <br> `custom_metadata`:")
+            lines.append("    ```yaml")
+            metadata_lines = _format_nested_metadata_lines(obj.get("custom_metadata", {}))
+            for row in metadata_lines:
+                lines.append(f"    {row}")
+            lines.append("    ```")
+    return lines
 
 
 def _percentile(sorted_vals: List[float], pct: float) -> float:
@@ -647,6 +794,7 @@ def render_provenance_card_markdown(
     """Render a summarized provenance-card markdown file."""
     workflow = dataset.get("workflow", {}) if isinstance(dataset.get("workflow"), dict) else {}
     tasks = dataset.get("tasks", []) if isinstance(dataset.get("tasks"), list) else []
+    objects = dataset.get("objects", []) if isinstance(dataset.get("objects"), list) else []
     tasks_sorted = sorted(tasks, key=lambda t: as_float(t.get("started_at")) or float("inf"))
 
     starts = [as_float(t.get("started_at")) for t in tasks if as_float(t.get("started_at")) is not None]
@@ -1066,6 +1214,7 @@ def render_provenance_card_markdown(
             ],
         )
     )
+    lines.extend(_build_object_details_lines(objects))
     lines.append("")
 
     lines.append("## Aggregation Method")
