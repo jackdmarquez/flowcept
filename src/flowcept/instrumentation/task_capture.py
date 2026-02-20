@@ -207,9 +207,7 @@ class FlowceptTask(object):
 
         if custom_metadata is not None:
             sanitized_custom_metadata = (
-                replace_non_serializable(custom_metadata)
-                if REPLACE_NON_JSON_SERIALIZABLE
-                else custom_metadata
+                replace_non_serializable(custom_metadata) if REPLACE_NON_JSON_SERIALIZABLE else custom_metadata
             )
 
             if self._task.custom_metadata:

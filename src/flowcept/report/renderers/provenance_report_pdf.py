@@ -408,8 +408,7 @@ def _resource_insights(tasks: List[Dict[str, Any]]) -> List[str]:
 
     insights: List[str] = []
     io_rank = [
-        (activity, activity_read.get(activity, 0.0), activity_write.get(activity, 0.0))
-        for activity in activity_order
+        (activity, activity_read.get(activity, 0.0), activity_write.get(activity, 0.0)) for activity in activity_order
     ]
     io_top = sorted(io_rank, key=lambda row: row[1] + row[2], reverse=True)[:5]
     if io_top:

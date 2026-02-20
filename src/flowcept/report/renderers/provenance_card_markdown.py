@@ -996,9 +996,7 @@ def render_provenance_card_markdown(
             elapsed_values = sorted(activity_elapsed.get(activity, []))
             elapsed_median = _percentile(elapsed_values, 0.50) if elapsed_values else None
             cpu_percent_values = activity_cpu_percent.get(activity, [])
-            cpu_percent_avg = (
-                (sum(cpu_percent_values) / len(cpu_percent_values)) if cpu_percent_values else None
-            )
+            cpu_percent_avg = (sum(cpu_percent_values) / len(cpu_percent_values)) if cpu_percent_values else None
             resource_rows.append(
                 [
                     activity,
