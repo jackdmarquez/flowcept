@@ -317,7 +317,7 @@ def _timing_insights(activities: List[Dict[str, Any]]) -> List[str]:
 
 
 def _resource_rows(tasks: List[Dict[str, Any]]) -> List[List[str]]:
-    """Build per-task resource usage rows."""
+    """Build per-activity aggregated resource usage rows."""
     rows = [
         [
             "Activity",
@@ -333,43 +333,84 @@ def _resource_rows(tasks: List[Dict[str, Any]]) -> List[List[str]]:
         ]
     ]
     ordered = sorted(tasks, key=lambda task: as_float(task.get("started_at")) or float("inf"))
+    activity_order: List[str] = []
+    activity_elapsed: Dict[str, List[float]] = defaultdict(list)
+    activity_cpu_user: Dict[str, float] = defaultdict(float)
+    activity_cpu_system: Dict[str, float] = defaultdict(float)
+    activity_cpu_percent: Dict[str, List[float]] = defaultdict(list)
+    activity_memory: Dict[str, float] = defaultdict(float)
+    activity_read: Dict[str, float] = defaultdict(float)
+    activity_write: Dict[str, float] = defaultdict(float)
+    activity_read_ops: Dict[str, float] = defaultdict(float)
+    activity_write_ops: Dict[str, float] = defaultdict(float)
+
     for task in ordered:
+        activity = _to_str(task.get("activity_id"))
+        if activity not in activity_order:
+            activity_order.append(activity)
         start = task.get("telemetry_at_start", {}) if isinstance(task.get("telemetry_at_start"), dict) else {}
         end = task.get("telemetry_at_end", {}) if isinstance(task.get("telemetry_at_end"), dict) else {}
         delta = _compute_telemetry_delta(start, end)
+        elapsed_value = elapsed_seconds(task.get("started_at"), task.get("ended_at"))
+        if elapsed_value is not None:
+            activity_elapsed[activity].append(elapsed_value)
+        activity_cpu_user[activity] += delta.get("cpu_user") or 0.0
+        activity_cpu_system[activity] += delta.get("cpu_system") or 0.0
+        activity_memory[activity] += delta.get("memory_used") or 0.0
+        activity_read[activity] += delta.get("read_bytes") or 0.0
+        activity_write[activity] += delta.get("write_bytes") or 0.0
+        activity_read_ops[activity] += delta.get("read_count") or 0.0
+        activity_write_ops[activity] += delta.get("write_count") or 0.0
+        if delta.get("cpu_percent") is not None:
+            activity_cpu_percent[activity].append(delta.get("cpu_percent"))
+
+    for activity in activity_order:
+        elapsed_values = sorted(activity_elapsed.get(activity, []))
+        elapsed_median = _percentile(elapsed_values, 0.5) if elapsed_values else None
+        cpu_percent_values = activity_cpu_percent.get(activity, [])
+        cpu_percent_avg = (sum(cpu_percent_values) / len(cpu_percent_values)) if cpu_percent_values else None
         rows.append(
             [
-                _to_str(task.get("activity_id")),
-                _fmt_seconds(elapsed_seconds(task.get("started_at"), task.get("ended_at"))),
-                _fmt_seconds(delta.get("cpu_user")),
-                _fmt_seconds(delta.get("cpu_system")),
-                _fmt_percent(delta.get("cpu_percent")),
-                _fmt_bytes(delta.get("memory_used")),
-                _fmt_bytes(delta.get("read_bytes")),
-                _fmt_bytes(delta.get("write_bytes")),
-                _fmt_count(delta.get("read_count")),
-                _fmt_count(delta.get("write_count")),
+                activity,
+                _fmt_seconds(elapsed_median),
+                _fmt_seconds(activity_cpu_user.get(activity)),
+                _fmt_seconds(activity_cpu_system.get(activity)),
+                _fmt_percent(cpu_percent_avg),
+                _fmt_bytes(activity_memory.get(activity)),
+                _fmt_bytes(activity_read.get(activity)),
+                _fmt_bytes(activity_write.get(activity)),
+                _fmt_count(activity_read_ops.get(activity)),
+                _fmt_count(activity_write_ops.get(activity)),
             ]
         )
     return rows
 
 
 def _resource_insights(tasks: List[Dict[str, Any]]) -> List[str]:
-    """Build per-task resource insights."""
-    io_rank: List[Tuple[str, float, float]] = []
-    cpu_rank: List[Tuple[str, float]] = []
-    memory_rank: List[Tuple[str, float]] = []
-    for task in tasks:
+    """Build per-activity aggregated resource insights."""
+    activity_order: List[str] = []
+    activity_read: Dict[str, float] = defaultdict(float)
+    activity_write: Dict[str, float] = defaultdict(float)
+    activity_cpu_percent: Dict[str, List[float]] = defaultdict(list)
+    activity_memory: Dict[str, float] = defaultdict(float)
+    for task in sorted(tasks, key=lambda task: as_float(task.get("started_at")) or float("inf")):
+        activity = _to_str(task.get("activity_id"))
+        if activity not in activity_order:
+            activity_order.append(activity)
         start = task.get("telemetry_at_start", {}) if isinstance(task.get("telemetry_at_start"), dict) else {}
         end = task.get("telemetry_at_end", {}) if isinstance(task.get("telemetry_at_end"), dict) else {}
         delta = _compute_telemetry_delta(start, end)
-        io_rank.append(
-            (_to_str(task.get("activity_id")), delta.get("read_bytes") or 0.0, delta.get("write_bytes") or 0.0)
-        )
-        cpu_rank.append((_to_str(task.get("activity_id")), delta.get("cpu_percent") or 0.0))
-        memory_rank.append((_to_str(task.get("activity_id")), delta.get("memory_used") or 0.0))
+        activity_read[activity] += delta.get("read_bytes") or 0.0
+        activity_write[activity] += delta.get("write_bytes") or 0.0
+        activity_memory[activity] += delta.get("memory_used") or 0.0
+        if delta.get("cpu_percent") is not None:
+            activity_cpu_percent[activity].append(delta.get("cpu_percent"))
 
     insights: List[str] = []
+    io_rank = [
+        (activity, activity_read.get(activity, 0.0), activity_write.get(activity, 0.0))
+        for activity in activity_order
+    ]
     io_top = sorted(io_rank, key=lambda row: row[1] + row[2], reverse=True)[:5]
     if io_top:
         insights.append("Most IO-heavy Activities (Read + Write):")
@@ -377,11 +418,23 @@ def _resource_insights(tasks: List[Dict[str, Any]]) -> List[str]:
             [f"`{name}`: Read={_fmt_bytes(read_b)}, Write={_fmt_bytes(write_b)}" for name, read_b, write_b in io_top]
         )
 
+    cpu_rank = [
+        (
+            activity,
+            (
+                (sum(activity_cpu_percent.get(activity, [])) / len(activity_cpu_percent.get(activity, [])))
+                if activity_cpu_percent.get(activity)
+                else 0.0
+            ),
+        )
+        for activity in activity_order
+    ]
     cpu_top = [(name, cpu) for name, cpu in sorted(cpu_rank, key=lambda row: row[1], reverse=True)[:5] if cpu > 0]
     if cpu_top:
         insights.append("Most CPU-active Activities:")
         insights.extend([f"`{name}`: CPU={_fmt_percent(cpu)}" for name, cpu in cpu_top])
 
+    memory_rank = [(activity, activity_memory.get(activity, 0.0)) for activity in activity_order]
     memory_top = [(name, mem) for name, mem in sorted(memory_rank, key=lambda row: row[1], reverse=True)[:5] if mem > 0]
     if memory_top:
         insights.append("Largest memory growth Activities:")
@@ -444,10 +497,24 @@ def _activity_detail_lines(records: List[Dict[str, Any]], activity_id: str) -> L
     """Build lines for per-activity details."""
     lines: List[str] = []
     subtype = _to_str((records[0].get("subtype") if records else None), "unknown")
+    has_subtype = bool(subtype and subtype != "unknown")
     if len(records) > 1:
-        lines.append(f"**{activity_id}** (`n={len(records)}`, subtype=`{subtype}`)")
+        if has_subtype:
+            lines.append(f"**{activity_id}** (`n={len(records)}`, subtype=`{subtype}`)")
+        else:
+            lines.append(f"**{activity_id}** (`n={len(records)}`)")
     else:
-        lines.append(f"**{activity_id}** (subtype=`{subtype}`)")
+        if has_subtype:
+            lines.append(f"**{activity_id}** (subtype=`{subtype}`)")
+        else:
+            lines.append(f"**{activity_id}**")
+        tags = records[0].get("tags") if records else None
+        if isinstance(tags, list) and len(tags) > 0:
+            if len(tags) == 1:
+                lines.append(f"Tag: `{_safe_repr(tags[0], 120)}`")
+            else:
+                tag_values = ", ".join(f"`{_safe_repr(tag, 80)}`" for tag in tags)
+                lines.append(f"Tags: {tag_values}")
 
     used_values: Dict[str, List[Any]] = defaultdict(list)
     generated_values: Dict[str, List[Any]] = defaultdict(list)
@@ -1116,11 +1183,11 @@ def _build_pdf_document(
     workflow = dataset.get("workflow", {}) if isinstance(dataset.get("workflow"), dict) else {}
     tasks = dataset.get("tasks", []) if isinstance(dataset.get("tasks"), list) else []
     objects = dataset.get("objects", []) if isinstance(dataset.get("objects"), list) else []
-    workflow_name_raw = _to_str(workflow.get("name"))
+    workflow_name_raw = _to_str(workflow.get("name")).strip()
     workflow_id_label = _to_str(workflow.get("workflow_id"))
     workflow_title = workflow_name_raw
-    if workflow_title == "unknown":
-        workflow_title = workflow_id_label if workflow_id_label != "unknown" else "workflow"
+    if not workflow_title or workflow_title == "unknown":
+        workflow_title = "Workflow"
 
     start, end, total_elapsed = workflow_bounds(tasks)
     telemetry = _extract_telemetry_overview(tasks)

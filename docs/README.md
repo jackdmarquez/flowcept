@@ -73,6 +73,41 @@ Settings reference:
 - https://flowcept.readthedocs.io/en/latest/setup.html
 - https://github.com/ORNL/flowcept/blob/main/resources/sample_settings.yaml
 
+Quick config profiles (recommended):
+
+```bash
+flowcept --config-profile full-online
+flowcept --config-profile full-offline
+```
+
+What this does:
+
+- Shows exactly which `settings.yaml` keys will be changed and the new values.
+- Asks for confirmation before writing.
+- Writes to `FLOWCEPT_SETTINGS_PATH` when set, otherwise `~/.flowcept/settings.yaml`.
+
+Skip confirmation:
+
+```bash
+flowcept --config-profile full-online -y
+```
+
+Current profile behavior:
+
+- `full-online`:
+  - `project.db_flush_mode: online`
+  - `mq.enabled: true`
+  - `kv_db.enabled: true`
+  - `databases.mongodb.enabled: true`
+  - `databases.lmdb.enabled: false`
+- `full-offline`:
+  - `project.db_flush_mode: offline`
+  - `project.dump_buffer.enabled: true`
+  - `mq.enabled: false`
+  - `kv_db.enabled: false`
+  - `databases.mongodb.enabled: false`
+  - `databases.lmdb.enabled: false`
+
 ## 2) Capture provenance
 
 ### 2.1 Simplest example
@@ -516,6 +551,8 @@ pip install flowcept[report_pdf]
 
 # Init settings
 flowcept --init-settings
+flowcept --config-profile full-online
+flowcept --config-profile full-offline
 flowcept --show-settings
 
 # Start services

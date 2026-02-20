@@ -126,6 +126,99 @@ def _sample_records_with_telemetry_and_io():
 
 
 class ReportServiceTests(unittest.TestCase):
+    def test_generate_report_per_activity_resource_usage_is_aggregated_by_activity_id(self):
+        records = [
+            {
+                "type": "workflow",
+                "workflow_id": "wf-resource-agg-1",
+                "campaign_id": "camp-resource-agg-1",
+                "name": "resource_agg_demo",
+            },
+            {
+                "type": "task",
+                "workflow_id": "wf-resource-agg-1",
+                "campaign_id": "camp-resource-agg-1",
+                "task_id": "t1",
+                "activity_id": "LoadData",
+                "status": "FINISHED",
+                "started_at": 10.0,
+                "ended_at": 12.0,
+                "telemetry_at_start": {"cpu": {"times_avg": {"user": 1.0, "system": 0.2}}},
+                "telemetry_at_end": {"cpu": {"times_avg": {"user": 2.0, "system": 0.5}}},
+            },
+            {
+                "type": "task",
+                "workflow_id": "wf-resource-agg-1",
+                "campaign_id": "camp-resource-agg-1",
+                "task_id": "t2",
+                "activity_id": "LoadData",
+                "status": "FINISHED",
+                "started_at": 13.0,
+                "ended_at": 15.0,
+                "telemetry_at_start": {"cpu": {"times_avg": {"user": 2.0, "system": 0.5}}},
+                "telemetry_at_end": {"cpu": {"times_avg": {"user": 2.8, "system": 0.9}}},
+            },
+            {
+                "type": "task",
+                "workflow_id": "wf-resource-agg-1",
+                "campaign_id": "camp-resource-agg-1",
+                "task_id": "t3",
+                "activity_id": "Transform",
+                "status": "FINISHED",
+                "started_at": 16.0,
+                "ended_at": 17.0,
+                "telemetry_at_start": {"cpu": {"times_avg": {"user": 2.8, "system": 0.9}}},
+                "telemetry_at_end": {"cpu": {"times_avg": {"user": 3.2, "system": 1.1}}},
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "PROVENANCE_CARD.md"
+            Flowcept.generate_report(records=records, output_path=str(output))
+            content = output.read_text(encoding="utf-8")
+            section = content.split("## Per-activity Resource Usage", 1)[1]
+            section = section.split("\n## ", 1)[0]
+            assert section.count("| LoadData |") == 1
+            assert section.count("| Transform |") == 1
+
+    def test_generate_report_single_activity_tags_render_only_when_present(self):
+        records = [
+            {
+                "type": "workflow",
+                "workflow_id": "wf-tags-1",
+                "campaign_id": "camp-tags-1",
+                "name": "tags_demo",
+            },
+            {
+                "type": "task",
+                "workflow_id": "wf-tags-1",
+                "campaign_id": "camp-tags-1",
+                "task_id": "t1",
+                "activity_id": "LoadData",
+                "status": "FINISHED",
+                "started_at": 10.0,
+                "ended_at": 11.0,
+                "tags": ["important"],
+            },
+            {
+                "type": "task",
+                "workflow_id": "wf-tags-1",
+                "campaign_id": "camp-tags-1",
+                "task_id": "t2",
+                "activity_id": "Transform",
+                "status": "FINISHED",
+                "started_at": 11.0,
+                "ended_at": 12.0,
+                "tags": [],
+            },
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "PROVENANCE_CARD.md"
+            Flowcept.generate_report(records=records, output_path=str(output))
+            content = output.read_text(encoding="utf-8")
+            assert "  - Tag: `important`" in content
+            assert "  - Tags:" not in content
+
     def test_generate_report_hides_unknown_workflow_name_in_title(self):
         records = [
             {
@@ -137,6 +230,33 @@ class ReportServiceTests(unittest.TestCase):
                 "type": "task",
                 "workflow_id": "wf-no-name-1",
                 "campaign_id": "camp-no-name-1",
+                "task_id": "t1",
+                "activity_id": "LoadData",
+                "status": "FINISHED",
+                "started_at": 10.0,
+                "ended_at": 11.0,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "PROVENANCE_CARD.md"
+            Flowcept.generate_report(records=records, output_path=str(output))
+            content = output.read_text(encoding="utf-8")
+            assert "# Workflow Provenance Card\n" in content
+            assert "# Workflow Provenance Card:" not in content
+            assert "- **Workflow Name:** `unknown`" not in content
+
+    def test_generate_report_hides_empty_workflow_name_in_title(self):
+        records = [
+            {
+                "type": "workflow",
+                "workflow_id": "wf-empty-name-1",
+                "campaign_id": "camp-empty-name-1",
+                "name": "",
+            },
+            {
+                "type": "task",
+                "workflow_id": "wf-empty-name-1",
+                "campaign_id": "camp-empty-name-1",
                 "task_id": "t1",
                 "activity_id": "LoadData",
                 "status": "FINISHED",

@@ -415,6 +415,13 @@ def _build_activity_io_summary(tasks_sorted: List[Dict[str, Any]]) -> List[str]:
                 lines.append(f"- **{activity}** (subtype={subtype_text})")
             else:
                 lines.append(f"- **{activity}**")
+            tags = members[0].get("tags")
+            if isinstance(tags, list) and len(tags) > 0:
+                if len(tags) == 1:
+                    lines.append(f"  - Tag: `{_safe_sample(tags[0], max_len=140)}`")
+                else:
+                    tags_text = ", ".join(f"`{_safe_sample(tag, max_len=140)}`" for tag in tags)
+                    lines.append(f"  - Tags: {tags_text}")
         else:
             if subtype_values:
                 subtype_text = ", ".join(f"`{s}`" for s in subtype_values)
@@ -462,8 +469,6 @@ def _build_activity_io_summary(tasks_sorted: List[Dict[str, Any]]) -> List[str]:
                 numeric_vals = [v for v in numeric_vals if v is not None]
                 if numeric_vals and len(numeric_vals) == len(gen_fields[key]):
                     variability_candidates.append((activity, f"generated.{key}", max(numeric_vals) - min(numeric_vals)))
-        if not used_fields and not gen_fields:
-            lines.append("  - No used/generated dict fields to summarize.")
     lines.append("")
     insight_lines: List[str] = []
     if activity_used_field_counts:
@@ -851,7 +856,10 @@ def render_provenance_card_markdown(
     max_end = max(ends) if ends else None
     total_elapsed = (max_end - min_start) if (min_start is not None and max_end is not None) else None
 
-    workflow_name = str(workflow.get("name", "unknown"))
+    workflow_name_raw = workflow.get("name", "unknown")
+    workflow_name = str(workflow_name_raw).strip()
+    if not workflow_name:
+        workflow_name = "unknown"
     workflow_id = str(workflow.get("workflow_id", "unknown"))
     campaign_id = str(workflow.get("campaign_id", "unknown"))
     workflow_title = workflow_name
@@ -898,22 +906,47 @@ def render_provenance_card_markdown(
     total_read_ops = 0.0
     total_write_ops = 0.0
     cpu_values: List[float] = []
+    activity_order: List[str] = []
+    activity_elapsed: Dict[str, List[float]] = defaultdict(list)
+    activity_cpu_user: Dict[str, float] = defaultdict(float)
+    activity_cpu_system: Dict[str, float] = defaultdict(float)
+    activity_cpu_percent: Dict[str, List[float]] = defaultdict(list)
+    activity_memory: Dict[str, float] = defaultdict(float)
+    activity_read: Dict[str, float] = defaultdict(float)
+    activity_write: Dict[str, float] = defaultdict(float)
+    activity_read_ops: Dict[str, float] = defaultdict(float)
+    activity_write_ops: Dict[str, float] = defaultdict(float)
+    activity_process_cpu: Dict[str, float] = defaultdict(float)
+    activity_net_sent: Dict[str, float] = defaultdict(float)
+    activity_net_recv: Dict[str, float] = defaultdict(float)
+    activity_gpu: Dict[str, float] = defaultdict(float)
 
     if telemetry_available:
         for task in tasks_sorted:
+            activity = _to_str(task.get("activity_id"))
+            if activity not in activity_order:
+                activity_order.append(activity)
             start = task.get("telemetry_at_start", {}) if isinstance(task.get("telemetry_at_start"), dict) else {}
             end = task.get("telemetry_at_end", {}) if isinstance(task.get("telemetry_at_end"), dict) else {}
             delta = _compute_telemetry_delta(start, end)
+            elapsed_value = elapsed_seconds(task.get("started_at"), task.get("ended_at"))
+            if elapsed_value is not None:
+                activity_elapsed[activity].append(elapsed_value)
             total_mem += delta["memory_used"] or 0.0
             total_read += delta["read_bytes"] or 0.0
             total_write += delta["write_bytes"] or 0.0
             total_read_ops += delta["read_count"] or 0.0
             total_write_ops += delta["write_count"] or 0.0
+            activity_cpu_user[activity] += delta["cpu_user"] or 0.0
+            activity_cpu_system[activity] += delta["cpu_system"] or 0.0
+            activity_memory[activity] += delta["memory_used"] or 0.0
+            activity_read[activity] += delta["read_bytes"] or 0.0
+            activity_write[activity] += delta["write_bytes"] or 0.0
+            activity_read_ops[activity] += delta["read_count"] or 0.0
+            activity_write_ops[activity] += delta["write_count"] or 0.0
             if delta["cpu_percent"] is not None:
                 cpu_values.append(delta["cpu_percent"])
-            io_heavy.append((_to_str(task.get("activity_id")), delta["read_bytes"] or 0.0, delta["write_bytes"] or 0.0))
-            cpu_heavy.append((_to_str(task.get("activity_id")), delta["cpu_percent"] or 0.0))
-            mem_heavy.append((_to_str(task.get("activity_id")), delta["memory_used"] or 0.0))
+                activity_cpu_percent[activity].append(delta["cpu_percent"])
             process_cpu = (
                 _delta(
                     _deep_get(start, ["process", "cpu_percent"]),
@@ -921,7 +954,7 @@ def render_provenance_card_markdown(
                 )
                 or 0.0
             )
-            process_cpu_heavy.append((_to_str(task.get("activity_id")), process_cpu))
+            activity_process_cpu[activity] += process_cpu
             net_sent = (
                 _delta(
                     _deep_get(start, ["network", "netio_sum", "bytes_sent"]),
@@ -936,7 +969,8 @@ def render_provenance_card_markdown(
                 )
                 or 0.0
             )
-            network_heavy.append((_to_str(task.get("activity_id")), net_sent, net_recv))
+            activity_net_sent[activity] += net_sent
+            activity_net_recv[activity] += net_recv
             task_gpu_delta = 0.0
             start_gpu = start.get("gpu", {}) if isinstance(start.get("gpu"), dict) else {}
             end_gpu = end.get("gpu", {}) if isinstance(end.get("gpu"), dict) else {}
@@ -956,29 +990,76 @@ def render_provenance_card_markdown(
                         task_gpu_delta += v_end - v_start
                     else:
                         task_gpu_delta += v_end
-            gpu_heavy.append((_to_str(task.get("activity_id")), task_gpu_delta))
+            activity_gpu[activity] += task_gpu_delta
 
+        for activity in activity_order:
+            elapsed_values = sorted(activity_elapsed.get(activity, []))
+            elapsed_median = _percentile(elapsed_values, 0.50) if elapsed_values else None
+            cpu_percent_values = activity_cpu_percent.get(activity, [])
+            cpu_percent_avg = (
+                (sum(cpu_percent_values) / len(cpu_percent_values)) if cpu_percent_values else None
+            )
             resource_rows.append(
                 [
-                    _to_str(task.get("activity_id")),
-                    _fmt_seconds(elapsed_seconds(task.get("started_at"), task.get("ended_at"))),
-                    _fmt_seconds(delta["cpu_user"]),
-                    _fmt_seconds(delta["cpu_system"]),
-                    _fmt_percent(delta["cpu_percent"]),
-                    _fmt_bytes(delta["memory_used"]),
-                    _fmt_bytes(delta["read_bytes"]),
-                    _fmt_bytes(delta["write_bytes"]),
-                    _fmt_count(delta["read_count"]),
-                    _fmt_count(delta["write_count"]),
+                    activity,
+                    _fmt_seconds(elapsed_median),
+                    _fmt_seconds(activity_cpu_user.get(activity)),
+                    _fmt_seconds(activity_cpu_system.get(activity)),
+                    _fmt_percent(cpu_percent_avg),
+                    _fmt_bytes(activity_memory.get(activity)),
+                    _fmt_bytes(activity_read.get(activity)),
+                    _fmt_bytes(activity_write.get(activity)),
+                    _fmt_count(activity_read_ops.get(activity)),
+                    _fmt_count(activity_write_ops.get(activity)),
                 ]
             )
 
-        io_heavy.sort(key=lambda x: x[1] + x[2], reverse=True)
-        cpu_heavy.sort(key=lambda x: x[1], reverse=True)
-        mem_heavy.sort(key=lambda x: x[1], reverse=True)
-        process_cpu_heavy.sort(key=lambda x: x[1], reverse=True)
-        network_heavy.sort(key=lambda x: x[1] + x[2], reverse=True)
-        gpu_heavy.sort(key=lambda x: x[1], reverse=True)
+        io_heavy = sorted(
+            [
+                (activity, activity_read.get(activity, 0.0), activity_write.get(activity, 0.0))
+                for activity in activity_order
+            ],
+            key=lambda x: x[1] + x[2],
+            reverse=True,
+        )
+        cpu_heavy = sorted(
+            [
+                (
+                    activity,
+                    (
+                        (sum(activity_cpu_percent.get(activity, [])) / len(activity_cpu_percent.get(activity, [])))
+                        if activity_cpu_percent.get(activity)
+                        else 0.0
+                    ),
+                )
+                for activity in activity_order
+            ],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        mem_heavy = sorted(
+            [(activity, activity_memory.get(activity, 0.0)) for activity in activity_order],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        process_cpu_heavy = sorted(
+            [(activity, activity_process_cpu.get(activity, 0.0)) for activity in activity_order],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        network_heavy = sorted(
+            [
+                (activity, activity_net_sent.get(activity, 0.0), activity_net_recv.get(activity, 0.0))
+                for activity in activity_order
+            ],
+            key=lambda x: x[1] + x[2],
+            reverse=True,
+        )
+        gpu_heavy = sorted(
+            [(activity, activity_gpu.get(activity, 0.0)) for activity in activity_order],
+            key=lambda x: x[1],
+            reverse=True,
+        )
     avg_cpu = (sum(cpu_values) / len(cpu_values)) if cpu_values else None
     telemetry_overview = _extract_telemetry_overview(tasks_sorted) if telemetry_available else {}
     has_real_telemetry = int(telemetry_overview.get("rows", 0) or 0) > 0

@@ -27,3 +27,18 @@ What this guide covers
 - architecture links for deeper internals
 
 For software developers, this is the recommended first read before drilling into detailed pages.
+
+Quick profile switch
+--------------------
+
+Use CLI profiles to switch between common online/offline settings quickly:
+
+.. code-block:: shell
+
+   flowcept --config-profile full-online
+   flowcept --config-profile full-offline
+
+The CLI prints exactly which keys will change, asks for confirmation, and writes to
+``FLOWCEPT_SETTINGS_PATH`` (if set) or ``~/.flowcept/settings.yaml``.
+
+See :doc:`cli-reference` for full details.
