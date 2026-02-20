@@ -79,6 +79,13 @@ def _is_empty(value: Any) -> bool:
     return False
 
 
+def _add_summary_bullet(story: List[Any], label: str, value: Any, style: Any) -> None:
+    """Add summary bullet only when value is meaningful."""
+    if _is_empty(value):
+        return
+    _add_bullet(story, f"**{label}:** `{value}`", style)
+
+
 def _deep_get(dct: Dict[str, Any], path: List[str]) -> Any:
     """Read nested dictionary path safely."""
     cur: Any = dct
@@ -1109,6 +1116,11 @@ def _build_pdf_document(
     workflow = dataset.get("workflow", {}) if isinstance(dataset.get("workflow"), dict) else {}
     tasks = dataset.get("tasks", []) if isinstance(dataset.get("tasks"), list) else []
     objects = dataset.get("objects", []) if isinstance(dataset.get("objects"), list) else []
+    workflow_name_raw = _to_str(workflow.get("name"))
+    workflow_id_label = _to_str(workflow.get("workflow_id"))
+    workflow_title = workflow_name_raw
+    if workflow_title == "unknown":
+        workflow_title = workflow_id_label if workflow_id_label != "unknown" else "workflow"
 
     start, end, total_elapsed = workflow_bounds(tasks)
     telemetry = _extract_telemetry_overview(tasks)
@@ -1120,7 +1132,7 @@ def _build_pdf_document(
         leftMargin=36,
         topMargin=36,
         bottomMargin=36,
-        title=f"{_to_str(workflow.get('name'), _to_str(workflow.get('workflow_id')))} - Workflow Provenance Report",
+        title=f"{workflow_title} - Workflow Provenance Report",
     )
 
     base = getSampleStyleSheet()
@@ -1177,37 +1189,36 @@ def _build_pdf_document(
 
     story: List[Any] = []
 
-    workflow_name = _to_str(workflow.get("name"), _to_str(workflow.get("workflow_id"), "Workflow"))
-    story.append(Paragraph(workflow_name, styles["title"]))
+    story.append(Paragraph(workflow_title, styles["title"]))
     story.append(Paragraph("Workflow Provenance Report", styles["subtitle"]))
 
     # Summary
     story.append(Paragraph("Summary", styles["h2"]))
     code_repo = workflow.get("code_repository", {}) if isinstance(workflow.get("code_repository"), dict) else {}
 
-    summary_lines = [
-        f"**Workflow Name:** `{workflow_name}`",
-        f"**Workflow ID:** `{_to_str(workflow.get('workflow_id'))}`",
-        f"**Campaign ID:** `{_to_str(workflow.get('campaign_id'))}`",
-        f"**Execution Start (UTC):** `{fmt_timestamp_utc(start)}`",
-        f"**Execution End (UTC):** `{fmt_timestamp_utc(end)}`",
-        f"**Total Elapsed (s):** `{_fmt_seconds(total_elapsed)}`",
-        f"**User:** `{_to_str(workflow.get('user'))}`",
-        f"**System Name:** `{_to_str(workflow.get('sys_name'))}`",
-        f"**Environment ID:** `{_to_str(workflow.get('environment_id'))}`",
-    ]
+    _add_summary_bullet(story, "Workflow Name", workflow_name_raw, styles["b1"])
+    _add_summary_bullet(story, "Workflow ID", workflow_id_label, styles["b1"])
+    _add_summary_bullet(story, "Campaign ID", _to_str(workflow.get("campaign_id")), styles["b1"])
+    _add_summary_bullet(story, "Execution Start (UTC)", fmt_timestamp_utc(start), styles["b1"])
+    _add_summary_bullet(story, "Execution End (UTC)", fmt_timestamp_utc(end), styles["b1"])
+    _add_summary_bullet(story, "Total Elapsed (s)", _fmt_seconds(total_elapsed), styles["b1"])
+    _add_summary_bullet(story, "User", _to_str(workflow.get("user")), styles["b1"])
+    _add_summary_bullet(story, "System Name", _to_str(workflow.get("sys_name")), styles["b1"])
+    _add_summary_bullet(story, "Environment ID", _to_str(workflow.get("environment_id")), styles["b1"])
     if workflow.get("subtype") is not None:
-        summary_lines.append(f"**Workflow Subtype:** `{_to_str(workflow.get('subtype'))}`")
+        _add_summary_bullet(story, "Workflow Subtype", _to_str(workflow.get("subtype")), styles["b1"])
     code_repo_text = (
         f"branch={_to_str(code_repo.get('branch'))}, "
         f"short_sha={_to_str(code_repo.get('short_sha'))}, "
         f"dirty={_to_str(code_repo.get('dirty'))}"
     )
-    summary_lines.append(f"**Code Repository:** `{code_repo_text}`")
-    summary_lines.append(f"**Git Remote:** `{_to_str(code_repo.get('remote'))}`")
-
-    for line in summary_lines:
-        _add_bullet(story, line, styles["b1"])
+    if not (
+        _is_empty(_to_str(code_repo.get("branch")))
+        and _is_empty(_to_str(code_repo.get("short_sha")))
+        and _is_empty(_to_str(code_repo.get("dirty")))
+    ):
+        _add_bullet(story, f"**Code Repository:** `{code_repo_text}`", styles["b1"])
+    _add_summary_bullet(story, "Git Remote", _to_str(code_repo.get("remote")), styles["b1"])
 
     workflow_args = workflow.get("used", {}) if isinstance(workflow.get("used"), dict) else {}
     simple_args = [
@@ -1234,18 +1245,37 @@ def _build_pdf_document(
             _add_bullet(story, f"`{name}`: `{_fmt_seconds(elapsed)} s`", styles["b2"])
 
     if telemetry.get("samples", 0) > 0:
-        _add_bullet(story, "**Resource Totals:**", styles["b1"])
-        _add_bullet(story, f"`Memory Used`: `{_fmt_bytes(telemetry.get('memory_used'))}`", styles["b2"])
-        _add_bullet(story, f"`Average CPU (%)`: `{_fmt_percent(telemetry.get('cpu_percent_avg'))}`", styles["b2"])
-        _add_bullet(story, "**IO:**", styles["b2"])
-        _add_bullet(story, f"`Read`: `{_fmt_bytes(telemetry.get('read_bytes'))}`", styles["b3"])
-        _add_bullet(story, f"`Write`: `{_fmt_bytes(telemetry.get('write_bytes'))}`", styles["b3"])
-        _add_bullet(story, f"`Read Ops`: `{_fmt_count(telemetry.get('read_count'))}`", styles["b3"])
-        _add_bullet(story, f"`Write Ops`: `{_fmt_count(telemetry.get('write_count'))}`", styles["b3"])
+        resource_items: List[Tuple[str, str]] = []
+        memory_text = _fmt_bytes(telemetry.get("memory_used"))
+        cpu_text = _fmt_percent(telemetry.get("cpu_percent_avg"))
+        read_text = _fmt_bytes(telemetry.get("read_bytes"))
+        write_text = _fmt_bytes(telemetry.get("write_bytes"))
+        read_ops_text = _fmt_count(telemetry.get("read_count"))
+        write_ops_text = _fmt_count(telemetry.get("write_count"))
+        if not _is_empty(memory_text):
+            resource_items.append(("b2", f"`Memory Used`: `{memory_text}`"))
+        if not _is_empty(cpu_text):
+            resource_items.append(("b2", f"`Average CPU (%)`: `{cpu_text}`"))
+        io_items: List[str] = []
+        if not _is_empty(read_text):
+            io_items.append(f"`Read`: `{read_text}`")
+        if not _is_empty(write_text):
+            io_items.append(f"`Write`: `{write_text}`")
+        if not _is_empty(read_ops_text):
+            io_items.append(f"`Read Ops`: `{read_ops_text}`")
+        if not _is_empty(write_ops_text):
+            io_items.append(f"`Write Ops`: `{write_ops_text}`")
+        if io_items:
+            resource_items.append(("b2", "**IO:**"))
+            resource_items.extend([("b3", item) for item in io_items])
+        if resource_items:
+            _add_bullet(story, "**Resource Totals:**", styles["b1"])
+            for level, item in resource_items:
+                _add_bullet(story, item, styles[level])
 
+    observations: List[str] = []
     if slowest and slowest[0][1] is not None:
-        _add_bullet(story, "**Key Observations:**", styles["b1"])
-        _add_bullet(story, f"Slowest Activity: `{slowest[0][0]}` at `{_fmt_seconds(slowest[0][1])} s`", styles["b2"])
+        observations.append(f"Slowest Activity: `{slowest[0][0]}` at `{_fmt_seconds(slowest[0][1])} s`")
 
     io_rank = sorted(
         [(_to_str(task.get("activity_id")), _extract_io_bytes(task)) for task in tasks],
@@ -1271,11 +1301,16 @@ def _build_pdf_document(
                     _deep_get(end, ["disk", "io_sum", "write_bytes"]),
                 )
             )
-            _add_bullet(
-                story,
-                f"Largest IO Activity: `{top_name}` with Read `{_fmt_bytes(read_b)}` and Write `{_fmt_bytes(write_b)}`",
-                styles["b2"],
-            )
+            read_label = _fmt_bytes(read_b)
+            write_label = _fmt_bytes(write_b)
+            if not (_is_empty(read_label) and _is_empty(write_label)):
+                observations.append(
+                    f"Largest IO Activity: `{top_name}` with Read `{read_label}` and Write `{write_label}`"
+                )
+    if observations:
+        _add_bullet(story, "**Key Observations:**", styles["b1"])
+        for line in observations:
+            _add_bullet(story, line, styles["b2"])
 
     # Workflow structure
     story.append(Paragraph("Workflow Structure", styles["h2"]))
@@ -1325,7 +1360,6 @@ def _build_pdf_document(
             _add_bullet(story, line, styles["b1"])
 
     # Workflow-level resource usage
-    story.append(Paragraph("Workflow-level Resource Usage", styles["h2"]))
     workflow_resource_rows = [["Metric", "Value"]]
     workflow_metrics = [
         ("Telemetry Samples (task start/end pairs)", _fmt_count(telemetry.get("samples"))),
@@ -1343,124 +1377,148 @@ def _build_pdf_document(
     for key, value in workflow_metrics:
         if not _is_empty(value):
             workflow_resource_rows.append([key, value])
-    story.append(_build_table(workflow_resource_rows, [2.8 * inch, 3.8 * inch], styles, font_size=9))
-
-    story.append(Paragraph("Interpretation & Insights", styles["h3"]))
+    workflow_insight_lines: List[str] = []
     if not _is_empty(_fmt_percent(telemetry.get("cpu_percent_avg"))):
-        _add_bullet(
-            story, f"CPU-heavy period (avg delta): `{_fmt_percent(telemetry.get('cpu_percent_avg'))}`.", styles["b1"]
+        workflow_insight_lines.append(
+            f"CPU-heavy period (avg delta): `{_fmt_percent(telemetry.get('cpu_percent_avg'))}`."
         )
     if not _is_empty(_fmt_bytes(telemetry.get("memory_used"))):
-        _add_bullet(story, f"Memory pressure (delta): `{_fmt_bytes(telemetry.get('memory_used'))}`.", styles["b1"])
+        workflow_insight_lines.append(f"Memory pressure (delta): `{_fmt_bytes(telemetry.get('memory_used'))}`.")
     if not _is_empty(_fmt_bytes(telemetry.get("read_bytes"))) or not _is_empty(
         _fmt_bytes(telemetry.get("write_bytes"))
     ):
-        _add_bullet(
-            story,
-            (
-                f"Disk IO pressure: read `{_fmt_bytes(telemetry.get('read_bytes'))}`, "
-                f"write `{_fmt_bytes(telemetry.get('write_bytes'))}`."
-            ),
-            styles["b1"],
+        workflow_insight_lines.append(
+            f"Disk IO pressure: read `{_fmt_bytes(telemetry.get('read_bytes'))}`, "
+            f"write `{_fmt_bytes(telemetry.get('write_bytes'))}`."
         )
+    if len(workflow_resource_rows) > 1 or workflow_insight_lines:
+        story.append(Paragraph("Workflow-level Resource Usage", styles["h2"]))
+        if len(workflow_resource_rows) > 1:
+            story.append(_build_table(workflow_resource_rows, [2.8 * inch, 3.8 * inch], styles, font_size=9))
+        if workflow_insight_lines:
+            story.append(Paragraph("Interpretation & Insights", styles["h3"]))
+            for line in workflow_insight_lines:
+                _add_bullet(story, line, styles["b1"])
 
     # Per-activity resource usage
-    story.append(Paragraph("Per-activity Resource Usage", styles["h2"]))
-    story.append(
-        _build_table(
-            _resource_rows(tasks),
-            [
-                1.2 * inch,
-                0.7 * inch,
-                0.7 * inch,
-                0.8 * inch,
-                0.6 * inch,
-                0.8 * inch,
-                0.8 * inch,
-                0.7 * inch,
-                0.7 * inch,
-                0.7 * inch,
-            ],
-            styles,
-            font_size=7,
-        )
-    )
+    per_activity_rows = _resource_rows(tasks)
+    per_activity_has_useful = any(any(not _is_empty(value) for value in row[2:]) for row in per_activity_rows[1:])
     resource_lines = _resource_insights(tasks)
-    if resource_lines:
-        story.append(Paragraph("Interpretation & Insights", styles["h3"]))
-        for line in resource_lines:
-            if line.endswith(":"):
-                _add_bullet(story, line, styles["b1"])
-            else:
-                _add_bullet(story, line, styles["b2"])
+    if per_activity_has_useful or resource_lines:
+        story.append(Paragraph("Per-activity Resource Usage", styles["h2"]))
+        if per_activity_has_useful:
+            story.append(
+                _build_table(
+                    per_activity_rows,
+                    [
+                        1.2 * inch,
+                        0.7 * inch,
+                        0.7 * inch,
+                        0.8 * inch,
+                        0.6 * inch,
+                        0.8 * inch,
+                        0.8 * inch,
+                        0.7 * inch,
+                        0.7 * inch,
+                        0.7 * inch,
+                    ],
+                    styles,
+                    font_size=7,
+                )
+            )
+        if resource_lines:
+            story.append(Paragraph("Interpretation & Insights", styles["h3"]))
+            for line in resource_lines:
+                if line.endswith(":"):
+                    _add_bullet(story, line, styles["b1"])
+                else:
+                    _add_bullet(story, line, styles["b2"])
 
     # Object artifacts summary
-    story.append(Paragraph("Object Artifacts Summary", styles["h2"]))
-    object_rows = [["Metric", "Value"]]
-    object_rows.extend(
-        [
-            ["Total Objects", _to_str(object_summary.get("total_objects"), "0")],
-            ["By Type", _to_str(object_summary.get("by_type"), "{}")],
-            ["By Storage", _to_str(object_summary.get("by_storage"), "{}")],
-            ["Task-linked Objects", _to_str(object_summary.get("task_linked"), "0")],
-            ["Workflow-linked Objects", _to_str(object_summary.get("workflow_linked"), "0")],
-            ["Max Version", _to_str(object_summary.get("max_version"), "-")],
-            ["Total Size", _fmt_bytes(as_float(object_summary.get("total_size_bytes")))],
-            ["Average Size", _fmt_bytes(as_float(object_summary.get("avg_size_bytes")))],
-            ["Max Size", _fmt_bytes(as_float(object_summary.get("max_size_bytes")))],
-        ]
-    )
-    story.append(_build_table(object_rows, [2.8 * inch, 3.8 * inch], styles, font_size=9))
-
-    story.append(Paragraph("Object Details by Type", styles["h3"]))
-    grouped_objects: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for obj in objects:
-        grouped_objects[_to_str(obj.get("type"), "unknown")].append(obj)
-
-    for obj_type in sorted(grouped_objects.keys()):
-        story.append(Paragraph(f"• <b>{html.escape(_object_type_label(obj_type))}</b>:", styles["b1"]))
-        ranked = sorted(
-            grouped_objects[obj_type],
-            key=lambda obj: (
-                as_float(obj.get("updated_at")) if as_float(obj.get("updated_at")) is not None else float("-inf"),
-                as_float(obj.get("version")) if as_float(obj.get("version")) is not None else float("-inf"),
-            ),
-            reverse=True,
+    if int(object_summary.get("total_objects", 0) or 0) > 0:
+        story.append(Paragraph("Object Artifacts Summary", styles["h2"]))
+        object_rows = [["Metric", "Value"]]
+        object_rows.extend(
+            [
+                ["Total Objects", _to_str(object_summary.get("total_objects"), "0")],
+                ["By Type", _to_str(object_summary.get("by_type"), "{}")],
+                ["By Storage", _to_str(object_summary.get("by_storage"), "{}")],
+                ["Task-linked Objects", _to_str(object_summary.get("task_linked"), "0")],
+                ["Workflow-linked Objects", _to_str(object_summary.get("workflow_linked"), "0")],
+                ["Max Version", _to_str(object_summary.get("max_version"), "-")],
+                ["Total Size", _fmt_bytes(as_float(object_summary.get("total_size_bytes")))],
+                ["Average Size", _fmt_bytes(as_float(object_summary.get("avg_size_bytes")))],
+                ["Max Size", _fmt_bytes(as_float(object_summary.get("max_size_bytes")))],
+            ]
         )
-        for obj in ranked[:5]:
-            object_id = _to_str(obj.get("object_id"), "-")
-            version = _to_str(obj.get("version"), "-")
-            storage = _to_str(obj.get("storage_type"), "-")
-            size = _fmt_bytes(as_float(obj.get("object_size_bytes")))
-            _add_bullet(story, f"`{object_id}` (version=`{version}`, storage=`{storage}`, size=`{size}`)", styles["b2"])
+        story.append(_build_table(object_rows, [2.8 * inch, 3.8 * inch], styles, font_size=9))
 
-            story.append(
-                Paragraph(_render_inline(f"`task_id`: `{_to_str(obj.get('task_id'), '-')}`"), styles["obj_detail"])
+        story.append(Paragraph("Object Details by Type", styles["h3"]))
+        grouped_objects: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for obj in objects:
+            grouped_objects[_to_str(obj.get("type"), "unknown")].append(obj)
+
+        for obj_type in sorted(grouped_objects.keys()):
+            story.append(Paragraph(f"• <b>{html.escape(_object_type_label(obj_type))}</b>:", styles["b1"]))
+            ranked = sorted(
+                grouped_objects[obj_type],
+                key=lambda obj: (
+                    as_float(obj.get("updated_at")) if as_float(obj.get("updated_at")) is not None else float("-inf"),
+                    as_float(obj.get("version")) if as_float(obj.get("version")) is not None else float("-inf"),
+                ),
+                reverse=True,
             )
-            story.append(
-                Paragraph(
-                    _render_inline(f"`workflow_id`: `{_to_str(obj.get('workflow_id'), '-')}`"), styles["obj_detail"]
+            for obj in ranked[:5]:
+                object_id = _to_str(obj.get("object_id"), "-")
+                version = _to_str(obj.get("version"), "-")
+                storage = _to_str(obj.get("storage_type"), "-")
+                size = _fmt_bytes(as_float(obj.get("object_size_bytes")))
+                _add_bullet(
+                    story,
+                    f"`{object_id}` (version=`{version}`, storage=`{storage}`, size=`{size}`)",
+                    styles["b2"],
                 )
-            )
-            story.append(Paragraph(_render_inline(f"`timestamp`: `{_object_timestamp(obj)}`"), styles["obj_detail"]))
-            story.append(
-                Paragraph(_render_inline(f"`sha256`: `{_to_str(obj.get('data_sha256'), '-')}`"), styles["obj_detail"])
-            )
-            tags = obj.get("tags")
-            if isinstance(tags, list) and tags:
+
                 story.append(
-                    Paragraph(_render_inline(f"`tags`: `{', '.join(str(tag) for tag in tags)}`"), styles["obj_detail"])
+                    Paragraph(_render_inline(f"`task_id`: `{_to_str(obj.get('task_id'), '-')}`"), styles["obj_detail"])
                 )
-            story.append(Paragraph(_render_inline("`custom_metadata`:"), styles["obj_detail"]))
-            metadata = obj.get("custom_metadata", {})
-            story.append(Preformatted("\n".join(_format_yaml_like_lines(metadata)), styles["mono_indent"]))
-            story.append(Spacer(1, 12))
+                story.append(
+                    Paragraph(
+                        _render_inline(f"`workflow_id`: `{_to_str(obj.get('workflow_id'), '-')}`"), styles["obj_detail"]
+                    )
+                )
+                story.append(
+                    Paragraph(
+                        _render_inline(f"`timestamp`: `{_object_timestamp(obj)}`"),
+                        styles["obj_detail"],
+                    )
+                )
+                story.append(
+                    Paragraph(
+                        _render_inline(f"`sha256`: `{_to_str(obj.get('data_sha256'), '-')}`"),
+                        styles["obj_detail"],
+                    )
+                )
+                tags = obj.get("tags")
+                if isinstance(tags, list) and tags:
+                    story.append(
+                        Paragraph(
+                            _render_inline(f"`tags`: `{', '.join(str(tag) for tag in tags)}`"),
+                            styles["obj_detail"],
+                        )
+                    )
+                story.append(Paragraph(_render_inline("`custom_metadata`:"), styles["obj_detail"]))
+                metadata = obj.get("custom_metadata", {})
+                story.append(Preformatted("\n".join(_format_yaml_like_lines(metadata)), styles["mono_indent"]))
+                story.append(Spacer(1, 12))
 
     # Aggregation method
-    story.append(Paragraph("Aggregation Method", styles["h2"]))
-    _add_bullet(story, "Grouping key: `activity_id`.", styles["b1"])
-    _add_bullet(story, "Each grouped row may aggregate multiple task records (`n_tasks`).", styles["b1"])
-    _add_bullet(story, "Aggregated metrics currently include count/status/timing.", styles["b1"])
+    has_aggregated_activity = any(int(activity.get("n_tasks", 0) or 0) > 1 for activity in activities)
+    if has_aggregated_activity:
+        story.append(Paragraph("Aggregation Method", styles["h2"]))
+        _add_bullet(story, "Grouping key: `activity_id`.", styles["b1"])
+        _add_bullet(story, "Each grouped row may aggregate multiple task records (`n_tasks`).", styles["b1"])
+        _add_bullet(story, "Aggregated metrics currently include count/status/timing.", styles["b1"])
 
     # Generator line (must be the final content of the PDF).
     generated_at = datetime.now().astimezone().strftime("%b %d, %Y at %I:%M %p %Z")

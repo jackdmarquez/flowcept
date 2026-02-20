@@ -126,6 +126,32 @@ def _sample_records_with_telemetry_and_io():
 
 
 class ReportServiceTests(unittest.TestCase):
+    def test_generate_report_hides_unknown_workflow_name_in_title(self):
+        records = [
+            {
+                "type": "workflow",
+                "workflow_id": "wf-no-name-1",
+                "campaign_id": "camp-no-name-1",
+            },
+            {
+                "type": "task",
+                "workflow_id": "wf-no-name-1",
+                "campaign_id": "camp-no-name-1",
+                "task_id": "t1",
+                "activity_id": "LoadData",
+                "status": "FINISHED",
+                "started_at": 10.0,
+                "ended_at": 11.0,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "PROVENANCE_CARD.md"
+            Flowcept.generate_report(records=records, output_path=str(output))
+            content = output.read_text(encoding="utf-8")
+            assert "# Workflow Provenance Card\n" in content
+            assert "# Workflow Provenance Card:" not in content
+            assert "- **Workflow Name:** `unknown`" not in content
+
     def test_generate_report_from_records(self):
         with tempfile.TemporaryDirectory() as td:
             output = Path(td) / "PROVENANCE_CARD.md"
@@ -140,6 +166,74 @@ class ReportServiceTests(unittest.TestCase):
             assert "- **Status Counts:** `{'FINISHED': 3}`" in content
             assert "| Total Size | 4.00 KB |" in content
             assert "| Average Size | 4.00 KB |" in content
+            assert "- **User:** `unknown`" not in content
+            assert "- **System Name:** `unknown`" not in content
+            assert "- **Environment ID:** `unknown`" not in content
+
+    def test_generate_report_hides_empty_resource_sections_and_aggregation(self):
+        records = [
+            {
+                "type": "workflow",
+                "workflow_id": "wf-no-resource-1",
+                "campaign_id": "camp-no-resource-1",
+                "name": "no_resource_demo",
+            },
+            {
+                "type": "task",
+                "workflow_id": "wf-no-resource-1",
+                "campaign_id": "camp-no-resource-1",
+                "task_id": "t1",
+                "activity_id": "LoadData",
+                "status": "FINISHED",
+                "started_at": 10.0,
+                "ended_at": 11.0,
+            },
+            {
+                "type": "task",
+                "workflow_id": "wf-no-resource-1",
+                "campaign_id": "camp-no-resource-1",
+                "task_id": "t2",
+                "activity_id": "Transform",
+                "status": "FINISHED",
+                "started_at": 11.0,
+                "ended_at": 12.0,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "PROVENANCE_CARD.md"
+            Flowcept.generate_report(records=records, output_path=str(output))
+            content = output.read_text(encoding="utf-8")
+            assert "## Workflow-level Resource Usage" not in content
+            assert "## Per-activity Resource Usage" not in content
+            assert "## Aggregation Method" not in content
+
+    def test_generate_report_hides_resource_sections_for_empty_telemetry_snapshots(self):
+        records = [
+            {
+                "type": "workflow",
+                "workflow_id": "wf-empty-tele-1",
+                "campaign_id": "camp-empty-tele-1",
+                "name": "empty_telemetry_demo",
+            },
+            {
+                "type": "task",
+                "workflow_id": "wf-empty-tele-1",
+                "campaign_id": "camp-empty-tele-1",
+                "task_id": "t1",
+                "activity_id": "LoadData",
+                "status": "FINISHED",
+                "started_at": 10.0,
+                "ended_at": 11.0,
+                "telemetry_at_start": {},
+                "telemetry_at_end": {},
+            },
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "PROVENANCE_CARD.md"
+            Flowcept.generate_report(records=records, output_path=str(output))
+            content = output.read_text(encoding="utf-8")
+            assert "## Workflow-level Resource Usage" not in content
+            assert "## Per-activity Resource Usage" not in content
 
     def test_generate_report_from_jsonl(self):
         with tempfile.TemporaryDirectory() as td:
@@ -194,6 +288,8 @@ class ReportServiceTests(unittest.TestCase):
             assert "## Per-activity Resource Usage" in content
             assert "Most IO-heavy Activities (Read + Write):" in content
             assert "Most CPU-active Activities:" in content
+            assert "## Object Artifacts Summary" not in content
+            assert "No per-Activity telemetry insights were available." not in content
 
     def test_generate_report_pdf_from_records(self):
         try:
@@ -316,3 +412,29 @@ class ReportServiceTests(unittest.TestCase):
             assert "- **Workflow Subtype:** `ml_workflow`" in content
             assert "- **LoadData** (subtype=`dataprep`)" in content
             assert "- **Transform** (subtype=`learning`)" in content
+
+    def test_generate_report_print_markdown_renders_when_rich_available(self):
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "PROVENANCE_CARD.md"
+            with (
+                patch("flowcept.report.service.importlib.util.find_spec", return_value=object()),
+                patch("flowcept.report.service.render_markdown_file_into_rich_terminal") as mocked_render,
+            ):
+                Flowcept.generate_report(
+                    records=_sample_records(),
+                    output_path=str(output),
+                    print_markdown=True,
+                )
+                mocked_render.assert_called_once_with(output)
+
+    def test_generate_report_print_markdown_raises_when_rich_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "PROVENANCE_CARD.md"
+            with patch("flowcept.report.service.importlib.util.find_spec", return_value=None):
+                with self.assertRaises(ModuleNotFoundError) as ctx:
+                    Flowcept.generate_report(
+                        records=_sample_records(),
+                        output_path=str(output),
+                        print_markdown=True,
+                    )
+            assert 'flowcept["extras"]' in str(ctx.exception)

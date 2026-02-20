@@ -7,11 +7,49 @@ from datetime import datetime
 import json
 import math
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+import re
+import sys
+from typing import Any, Dict, List, Optional, Tuple
 
 from flowcept import __version__
 from flowcept.report.aggregations import as_float, elapsed_seconds, fmt_timestamp_utc
 from flowcept.report.sanitization import sanitize_json_like
+
+
+def render_markdown_file_into_rich_terminal(markdown_path: str | Path, *, stream=None) -> None:
+    """Render a markdown file into a Rich-enabled terminal stream."""
+    stream = stream or sys.stdout
+    markdown_path = Path(markdown_path)
+    text = markdown_path.read_text(encoding="utf-8", errors="replace")
+
+    from rich.console import Console
+    from rich.markdown import Markdown
+
+    console = Console(file=stream, force_terminal=getattr(stream, "isatty", lambda: False)(), soft_wrap=True)
+    lines = text.splitlines()
+    markdown_buffer: List[str] = []
+
+    def flush_markdown_buffer() -> None:
+        if not markdown_buffer:
+            return
+        console.print(Markdown("\n".join(markdown_buffer), justify="left"))
+        markdown_buffer.clear()
+
+    seen_heading = False
+    for line in lines:
+        match = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if match:
+            flush_markdown_buffer()
+            if seen_heading:
+                console.print("")
+            title = match.group(2).strip()
+            console.print(f"[bold]{title}[/bold]")
+            console.print("")
+            seen_heading = True
+            continue
+        markdown_buffer.append(line)
+
+    flush_markdown_buffer()
 
 
 def _to_str(value: Any, default: str = "unknown") -> str:
@@ -88,6 +126,13 @@ def _is_empty_metric(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip() in {"-", "unknown", "", "- / -", "-/-"}
     return False
+
+
+def _append_summary_line(lines: List[str], label: str, value: Any) -> None:
+    """Append summary bullet only when value is meaningful."""
+    if _is_empty_metric(value):
+        return
+    lines.append(f"- **{label}:** `{value}`")
 
 
 def _filter_all_empty_columns(
@@ -420,57 +465,27 @@ def _build_activity_io_summary(tasks_sorted: List[Dict[str, Any]]) -> List[str]:
         if not used_fields and not gen_fields:
             lines.append("  - No used/generated dict fields to summarize.")
     lines.append("")
-    lines.append("### Interpretation & Insights")
+    insight_lines: List[str] = []
     if activity_used_field_counts:
         top_used = sorted(activity_used_field_counts, key=lambda x: x[1], reverse=True)[:3]
-        lines.append(
+        insight_lines.append(
             "- Activities with richest **used** metadata: " + ", ".join(f"`{a}` ({n} fields)" for a, n in top_used)
         )
     if activity_generated_field_counts:
         top_gen = sorted(activity_generated_field_counts, key=lambda x: x[1], reverse=True)[:3]
-        lines.append(
+        insight_lines.append(
             "- Activities with richest **generated** metadata: " + ", ".join(f"`{a}` ({n} fields)" for a, n in top_gen)
         )
     if variability_candidates:
         top_var = sorted(variability_candidates, key=lambda x: x[2], reverse=True)[:5]
-        lines.append(
+        insight_lines.append(
             "- Highest numeric variability fields: " + ", ".join(f"`{a}:{f}` (range={v:.3f})" for a, f, v in top_var)
         )
-    if not activity_used_field_counts and not activity_generated_field_counts:
-        lines.append("- No structured used/generated metadata was available for insight extraction.")
+    if insight_lines:
+        lines.append("### Interpretation & Insights")
+        lines.extend(insight_lines)
     lines.append("")
     return lines
-
-
-def _iter_saved_files(tasks: Iterable[Dict[str, Any]]) -> List[str]:
-    saved_files: List[str] = []
-    for task in tasks:
-        cmeta = task.get("custom_metadata", {})
-        if not isinstance(cmeta, dict):
-            continue
-        meta = cmeta.get("metadata", {})
-        if not isinstance(meta, dict):
-            continue
-        vals = meta.get("saved_files")
-        if isinstance(vals, list):
-            saved_files.extend(str(v) for v in vals)
-    return sorted(set(saved_files))
-
-
-def _iter_input_output_paths(tasks: Iterable[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
-    inputs = set()
-    outputs = set()
-    for task in tasks:
-        used = task.get("used", {})
-        if not isinstance(used, dict):
-            continue
-        in_path = used.get("input_path")
-        out_dir = used.get("output_dir")
-        if isinstance(in_path, str) and in_path.strip():
-            inputs.add(in_path.strip())
-        if isinstance(out_dir, str) and out_dir.strip():
-            outputs.add(out_dir.strip())
-    return sorted(inputs), sorted(outputs)
 
 
 def _deep_get(d: Dict[str, Any], path: List[str]) -> Any:
@@ -771,25 +786,22 @@ def _extract_telemetry_overview(tasks_sorted: List[Dict[str, Any]]) -> Dict[str,
 
 def _render_pipeline_structure(
     activities: List[Dict[str, Any]],
-    input_paths: List[str],
-    output_paths: List[str],
-    saved_files: List[str],
 ) -> str:
-    input_path = input_paths[0] if input_paths else " input data"
-    output_path = saved_files[0] if saved_files else (output_paths[-1] if output_paths else " output data")
+    input_data = "   input"
+    output_data = "   output"
 
-    rail = "        │"
-    down = "        ▼"
-    lines = [input_path, rail, down]
+    rail = "     │"
+    down = "     ▼"
+    lines = [input_data, rail, down]
     if not activities:
-        lines.extend([down, output_path])
+        lines.extend([down, output_data])
     else:
         for i, row in enumerate(activities):
             lines.append(f" {_to_str(row.get('activity_id'))}")
             if i < len(activities) - 1:
                 lines.append(rail)
         lines.append(down)
-        lines.append(output_path)
+        lines.append(output_data)
 
     return "## Workflow Structure\n\n```text\n" + "\n".join(lines) + "\n```"
 
@@ -842,8 +854,9 @@ def render_provenance_card_markdown(
     workflow_name = str(workflow.get("name", "unknown"))
     workflow_id = str(workflow.get("workflow_id", "unknown"))
     campaign_id = str(workflow.get("campaign_id", "unknown"))
-    if workflow_name == "unknown" and workflow_id != "unknown":
-        workflow_name = workflow_id
+    workflow_title = workflow_name
+    if workflow_title == "unknown":
+        workflow_title = None
 
     status_counts: Dict[str, int] = {}
     for row in activities:
@@ -968,9 +981,7 @@ def render_provenance_card_markdown(
         gpu_heavy.sort(key=lambda x: x[1], reverse=True)
     avg_cpu = (sum(cpu_values) / len(cpu_values)) if cpu_values else None
     telemetry_overview = _extract_telemetry_overview(tasks_sorted) if telemetry_available else {}
-
-    input_paths, output_paths = _iter_input_output_paths(tasks_sorted)
-    saved_files = _iter_saved_files(tasks_sorted)
+    has_real_telemetry = int(telemetry_overview.get("rows", 0) or 0) > 0
 
     code_repo = workflow.get("code_repository", {}) if isinstance(workflow.get("code_repository"), dict) else {}
     code_repo_text = (
@@ -980,22 +991,30 @@ def render_provenance_card_markdown(
     )
 
     lines: List[str] = []
-    lines.append(f"# Workflow Provenance Card: {workflow_name}")
+    if workflow_title is None:
+        lines.append("# Workflow Provenance Card")
+    else:
+        lines.append(f"# Workflow Provenance Card: {workflow_title}")
     lines.append("")
     lines.append("## Summary")
-    lines.append(f"- **Workflow Name:** `{workflow_name}`")
-    lines.append(f"- **Workflow ID:** `{workflow_id}`")
-    lines.append(f"- **Campaign ID:** `{campaign_id}`")
-    lines.append(f"- **Execution Start (UTC):** `{fmt_timestamp_utc(min_start)}`")
-    lines.append(f"- **Execution End (UTC):** `{fmt_timestamp_utc(max_end)}`")
-    lines.append(f"- **Total Elapsed (s):** `{_fmt_seconds(total_elapsed)}`")
-    lines.append(f"- **User:** `{_to_str(workflow.get('user'))}`")
-    lines.append(f"- **System Name:** `{_to_str(workflow.get('sys_name'))}`")
-    lines.append(f"- **Environment ID:** `{_to_str(workflow.get('environment_id'))}`")
+    _append_summary_line(lines, "Workflow Name", workflow_name)
+    _append_summary_line(lines, "Workflow ID", workflow_id)
+    _append_summary_line(lines, "Campaign ID", campaign_id)
+    _append_summary_line(lines, "Execution Start (UTC)", fmt_timestamp_utc(min_start))
+    _append_summary_line(lines, "Execution End (UTC)", fmt_timestamp_utc(max_end))
+    _append_summary_line(lines, "Total Elapsed (s)", _fmt_seconds(total_elapsed))
+    _append_summary_line(lines, "User", _to_str(workflow.get("user")))
+    _append_summary_line(lines, "System Name", _to_str(workflow.get("sys_name")))
+    _append_summary_line(lines, "Environment ID", _to_str(workflow.get("environment_id")))
     if workflow.get("subtype") is not None:
-        lines.append(f"- **Workflow Subtype:** `{_to_str(workflow.get('subtype'))}`")
-    lines.append(f"- **Code Repository:** `{code_repo_text}`")
-    lines.append(f"- **Git Remote:** `{_to_str(code_repo.get('remote'))}`")
+        _append_summary_line(lines, "Workflow Subtype", _to_str(workflow.get("subtype")))
+    if not (
+        _is_empty_metric(_to_str(code_repo.get("branch")))
+        and _is_empty_metric(_to_str(code_repo.get("short_sha")))
+        and _is_empty_metric(_to_str(code_repo.get("dirty")))
+    ):
+        lines.append(f"- **Code Repository:** `{code_repo_text}`")
+    _append_summary_line(lines, "Git Remote", _to_str(code_repo.get("remote")))
     workflow_args = workflow.get("used", {}) if isinstance(workflow.get("used"), dict) else {}
     simple_workflow_args = []
     for key in sorted(workflow_args.keys()):
@@ -1006,12 +1025,6 @@ def render_provenance_card_markdown(
         lines.append("- **Workflow args:**")
         for key, value in simple_workflow_args:
             lines.append(f"  <br> `{key}`: `{value}`")
-    if input_paths:
-        lines.append(f"- **Input Paths:** `{input_paths}`")
-    if output_paths:
-        lines.append(f"- **Output Directories:** `{output_paths}`")
-    if saved_files:
-        lines.append(f"- **Saved Files:** `{saved_files}`")
     lines.append("")
 
     lines.append("## Workflow-level Summary")
@@ -1023,27 +1036,52 @@ def render_provenance_card_markdown(
         lines.append("- **Top 5 Slowest Activities:**")
     for name, sec in slowest_items:
         lines.append(f"  - `{name}`: `{_fmt_seconds(sec)} s`")
-    if telemetry_available:
-        lines.append("- **Resource Totals:**")
-        lines.append(f"  - `Memory Used`: `{_fmt_bytes(total_mem)}`")
-        lines.append(f"  - `Average CPU (%)`: `{_fmt_percent(avg_cpu)}`")
-        lines.append("  - **IO:**")
-        lines.append(f"    - `Read`: `{_fmt_bytes(total_read)}`")
-        lines.append(f"    - `Write`: `{_fmt_bytes(total_write)}`")
-        lines.append(f"    - `Read Ops`: `{_fmt_count(total_read_ops)}`")
-        lines.append(f"    - `Write Ops`: `{_fmt_count(total_write_ops)}`")
-        lines.append("- **Key Observations:**")
+    if has_real_telemetry:
+        resource_total_lines: List[str] = []
+        memory_text = _fmt_bytes(total_mem)
+        cpu_text = _fmt_percent(avg_cpu)
+        read_text = _fmt_bytes(total_read)
+        write_text = _fmt_bytes(total_write)
+        read_ops_text = _fmt_count(total_read_ops)
+        write_ops_text = _fmt_count(total_write_ops)
+        if not _is_empty_metric(memory_text):
+            resource_total_lines.append(f"  - `Memory Used`: `{memory_text}`")
+        if not _is_empty_metric(cpu_text):
+            resource_total_lines.append(f"  - `Average CPU (%)`: `{cpu_text}`")
+        io_lines: List[str] = []
+        if not _is_empty_metric(read_text):
+            io_lines.append(f"    - `Read`: `{read_text}`")
+        if not _is_empty_metric(write_text):
+            io_lines.append(f"    - `Write`: `{write_text}`")
+        if not _is_empty_metric(read_ops_text):
+            io_lines.append(f"    - `Read Ops`: `{read_ops_text}`")
+        if not _is_empty_metric(write_ops_text):
+            io_lines.append(f"    - `Write Ops`: `{write_ops_text}`")
+        if io_lines:
+            resource_total_lines.append("  - **IO:**")
+            resource_total_lines.extend(io_lines)
+        if resource_total_lines:
+            lines.append("- **Resource Totals:**")
+            lines.extend(resource_total_lines)
+
+        observation_lines: List[str] = []
         if top_slowest and top_slowest[0][1] is not None:
-            lines.append(f"  - Slowest Activity: `{top_slowest[0][0]}` at `{_fmt_seconds(top_slowest[0][1])} s`")
+            observation_lines.append(
+                f"  - Slowest Activity: `{top_slowest[0][0]}` at `{_fmt_seconds(top_slowest[0][1])} s`"
+            )
         if io_heavy:
             top_io = io_heavy[0]
-            lines.append(
-                "  - Largest IO Activity: "
-                f"`{top_io[0]}` with Read `{_fmt_bytes(top_io[1])}` "
-                f"and Write `{_fmt_bytes(top_io[2])}`"
-            )
+            top_read_text = _fmt_bytes(top_io[1])
+            top_write_text = _fmt_bytes(top_io[2])
+            if not (_is_empty_metric(top_read_text) and _is_empty_metric(top_write_text)):
+                observation_lines.append(
+                    f"  - Largest IO Activity: `{top_io[0]}` with Read `{top_read_text}` and Write `{top_write_text}`"
+                )
+        if observation_lines:
+            lines.append("- **Key Observations:**")
+            lines.extend(observation_lines)
     lines.append("")
-    lines.append(_render_pipeline_structure(activities, input_paths, output_paths, saved_files))
+    lines.append(_render_pipeline_structure(activities))
     lines.append("")
 
     lines.append("## Timing Report")
@@ -1060,8 +1098,7 @@ def render_provenance_card_markdown(
     lines.append("")
     lines.extend(_build_activity_io_summary(tasks_sorted))
 
-    if telemetry_available:
-        lines.append("## Workflow-level Resource Usage")
+    if has_real_telemetry:
         gpu_device_count = len(telemetry_overview.get("gpu_names", [])) or len(telemetry_overview.get("gpu_ids", []))
         peak_gpu_temp = None
         if telemetry_overview.get("gpu_temp_peaks"):
@@ -1129,27 +1166,24 @@ def render_provenance_card_markdown(
             ["Peak GPU Temperature", f"{peak_gpu_temp:.3f}" if peak_gpu_temp is not None else "-"],
         ]
         workflow_resource_rows = [row for row in workflow_resource_rows if not _is_empty_metric(row[1])]
-        if workflow_resource_rows:
-            lines.append(_render_table(["Metric", "Value"], workflow_resource_rows))
-        else:
-            lines.append("- No workflow-level telemetry metrics were available.")
-        lines.append("")
-        lines.append("### Interpretation & Insights")
+        insight_lines: List[str] = []
         if not _is_empty_metric(_fmt_percent(telemetry_overview.get("cpu_percent_avg"))):
             cpu_avg = _fmt_percent(telemetry_overview.get("cpu_percent_avg"))
-            lines.append(f"- CPU-heavy period (avg delta): `{cpu_avg}`.")
+            insight_lines.append(f"- CPU-heavy period (avg delta): `{cpu_avg}`.")
         if not _is_empty_metric(_fmt_bytes(telemetry_overview.get("memory_used"))):
-            lines.append(
+            insight_lines.append(
                 "- Memory pressure (delta): "
                 f"`{_fmt_bytes(telemetry_overview.get('memory_used'))}`; "
                 f"peak RSS: `{_fmt_bytes(telemetry_overview.get('proc_rss_max'))}`."
             )
         if not _is_empty_metric(_fmt_bytes(total_read)) or not _is_empty_metric(_fmt_bytes(total_write)):
-            lines.append(f"- Disk IO pressure: read `{_fmt_bytes(total_read)}`, write `{_fmt_bytes(total_write)}`.")
+            insight_lines.append(
+                f"- Disk IO pressure: read `{_fmt_bytes(total_read)}`, write `{_fmt_bytes(total_write)}`."
+            )
         if not _is_empty_metric(_fmt_bytes(net_metrics.get("net_bytes_sent"))) or not _is_empty_metric(
             _fmt_bytes(net_metrics.get("net_bytes_recv"))
         ):
-            lines.append(
+            insight_lines.append(
                 "- Network movement: sent "
                 f"`{_fmt_bytes(net_metrics.get('net_bytes_sent'))}`, received "
                 f"`{_fmt_bytes(net_metrics.get('net_bytes_recv'))}`."
@@ -1157,20 +1191,26 @@ def render_provenance_card_markdown(
         if not _is_empty_metric(_fmt_seconds(telemetry_overview.get("proc_cpu_user"))) or not _is_empty_metric(
             _fmt_seconds(telemetry_overview.get("proc_cpu_system"))
         ):
-            lines.append(
+            insight_lines.append(
                 "- Process-level pressure: "
                 f"cpu_user_delta=`{_fmt_seconds(telemetry_overview.get('proc_cpu_user'))}`, "
                 f"cpu_system_delta=`{_fmt_seconds(telemetry_overview.get('proc_cpu_system'))}`."
             )
         if gpu_device_count:
-            lines.append(
+            insight_lines.append(
                 f"- GPU activity detected on `{gpu_device_count}` device(s); peak temperature: `{peak_gpu_temp:.3f}`."
             )
-        if lines[-1] == "### Interpretation & Insights":
-            lines.append("- No telemetry insights were available.")
-        lines.append("")
+        show_workflow_resource_section = bool(workflow_resource_rows or insight_lines)
+        if show_workflow_resource_section:
+            lines.append("## Workflow-level Resource Usage")
+            if workflow_resource_rows:
+                lines.append(_render_table(["Metric", "Value"], workflow_resource_rows))
+                lines.append("")
+            if insight_lines:
+                lines.append("### Interpretation & Insights")
+                lines.extend(insight_lines)
+                lines.append("")
 
-        lines.append("## Per-activity Resource Usage")
         per_activity_headers = [
             "Activity",
             "Elapsed (s)",
@@ -1188,74 +1228,88 @@ def render_provenance_card_markdown(
             resource_rows,
             keep_indices=[0, 1],
         )
-        lines.append(_render_table(per_activity_headers, resource_rows))
-        lines.append("")
-        lines.append("### Interpretation & Insights")
+        per_activity_insight_lines: List[str] = []
         if any((read_b + write_b) > 0 for _, read_b, write_b in io_heavy):
-            lines.append("- Most IO-heavy Activities (Read + Write):")
+            per_activity_insight_lines.append("- Most IO-heavy Activities (Read + Write):")
             for name, read_b, write_b in io_heavy[:5]:
                 if read_b + write_b <= 0:
                     continue
-                lines.append(f"  - `{name}`: Read={_fmt_bytes(read_b)}, Write={_fmt_bytes(write_b)}")
+                per_activity_insight_lines.append(
+                    f"  - `{name}`: Read={_fmt_bytes(read_b)}, Write={_fmt_bytes(write_b)}"
+                )
         if any(cpu_pct > 0 for _, cpu_pct in cpu_heavy):
-            lines.append("- Most CPU-active Activities:")
+            per_activity_insight_lines.append("- Most CPU-active Activities:")
             for name, cpu_pct in cpu_heavy[:5]:
                 if cpu_pct <= 0:
                     continue
-                lines.append(f"  - `{name}`: CPU={_fmt_percent(cpu_pct)}")
+                per_activity_insight_lines.append(f"  - `{name}`: CPU={_fmt_percent(cpu_pct)}")
         if any(mem > 0 for _, mem in mem_heavy):
-            lines.append("- Largest memory growth Activities:")
+            per_activity_insight_lines.append("- Largest memory growth Activities:")
             for name, mem in mem_heavy[:5]:
                 if mem <= 0:
                     continue
-                lines.append(f"  - `{name}`: Memory Delta={_fmt_bytes(mem)}")
+                per_activity_insight_lines.append(f"  - `{name}`: Memory Delta={_fmt_bytes(mem)}")
         if any((sent + recv) > 0 for _, sent, recv in network_heavy):
-            lines.append("- Most network-active Activities:")
+            per_activity_insight_lines.append("- Most network-active Activities:")
             for name, sent, recv in network_heavy[:5]:
                 if sent + recv <= 0:
                     continue
-                lines.append(f"  - `{name}`: Sent={_fmt_bytes(sent)}, Received={_fmt_bytes(recv)}")
+                per_activity_insight_lines.append(f"  - `{name}`: Sent={_fmt_bytes(sent)}, Received={_fmt_bytes(recv)}")
         if any(proc_cpu > 0 for _, proc_cpu in process_cpu_heavy):
-            lines.append("- Highest process CPU delta Activities:")
+            per_activity_insight_lines.append("- Highest process CPU delta Activities:")
             for name, proc_cpu in process_cpu_heavy[:5]:
                 if proc_cpu <= 0:
                     continue
-                lines.append(f"  - `{name}`: Process CPU Delta={_fmt_percent(proc_cpu)}")
+                per_activity_insight_lines.append(f"  - `{name}`: Process CPU Delta={_fmt_percent(proc_cpu)}")
         if any(gpu_delta > 0 for _, gpu_delta in gpu_heavy):
-            lines.append("- Highest GPU memory delta Activities:")
+            per_activity_insight_lines.append("- Highest GPU memory delta Activities:")
             for name, gpu_delta in gpu_heavy[:5]:
                 if gpu_delta <= 0:
                     continue
-                lines.append(f"  - `{name}`: GPU Used Delta={_fmt_bytes(gpu_delta)}")
-        if lines[-1] == "### Interpretation & Insights":
-            lines.append("- No per-Activity telemetry insights were available.")
+                per_activity_insight_lines.append(f"  - `{name}`: GPU Used Delta={_fmt_bytes(gpu_delta)}")
+        per_activity_has_resource_values = any(
+            any(not _is_empty_metric(cell) for cell in row[2:]) for row in resource_rows
+        )
+        show_per_activity_resource_section = bool(per_activity_has_resource_values or per_activity_insight_lines)
+        if show_per_activity_resource_section:
+            lines.append("## Per-activity Resource Usage")
+            if per_activity_has_resource_values:
+                lines.append(_render_table(per_activity_headers, resource_rows))
+                lines.append("")
+            if per_activity_insight_lines:
+                lines.append("### Interpretation & Insights")
+                lines.extend(per_activity_insight_lines)
+                lines.append("")
+
+    total_objects = int(object_summary.get("total_objects", 0) or 0)
+    if total_objects > 0:
+        lines.append("## Object Artifacts Summary")
+        lines.append(
+            _render_table(
+                ["Metric", "Value"],
+                [
+                    ["Total Objects", total_objects],
+                    ["By Type", object_summary.get("by_type", {})],
+                    ["By Storage", object_summary.get("by_storage", {})],
+                    ["Task-linked Objects", object_summary.get("task_linked", 0)],
+                    ["Workflow-linked Objects", object_summary.get("workflow_linked", 0)],
+                    ["Max Version", object_summary.get("max_version", "unknown")],
+                    ["Total Size", _fmt_bytes(object_summary.get("total_size_bytes"))],
+                    ["Average Size", _fmt_bytes(object_summary.get("avg_size_bytes"))],
+                    ["Max Size", _fmt_bytes(object_summary.get("max_size_bytes"))],
+                ],
+            )
+        )
+        lines.extend(_build_object_details_lines(objects))
         lines.append("")
 
-    lines.append("## Object Artifacts Summary")
-    lines.append(
-        _render_table(
-            ["Metric", "Value"],
-            [
-                ["Total Objects", object_summary.get("total_objects", 0)],
-                ["By Type", object_summary.get("by_type", {})],
-                ["By Storage", object_summary.get("by_storage", {})],
-                ["Task-linked Objects", object_summary.get("task_linked", 0)],
-                ["Workflow-linked Objects", object_summary.get("workflow_linked", 0)],
-                ["Max Version", object_summary.get("max_version", "unknown")],
-                ["Total Size", _fmt_bytes(object_summary.get("total_size_bytes"))],
-                ["Average Size", _fmt_bytes(object_summary.get("avg_size_bytes"))],
-                ["Max Size", _fmt_bytes(object_summary.get("max_size_bytes"))],
-            ],
-        )
-    )
-    lines.extend(_build_object_details_lines(objects))
-    lines.append("")
-
-    lines.append("## Aggregation Method")
-    lines.append("- Grouping key: `activity_id`.")
-    lines.append("- Each grouped row may aggregate multiple task records (`n_tasks`).")
-    lines.append("- Aggregated metrics currently include count/status/timing.")
-    lines.append("")
+    has_aggregated_activity = any(int(row.get("n_tasks", 0) or 0) > 1 for row in activities)
+    if has_aggregated_activity:
+        lines.append("## Aggregation Method")
+        lines.append("- Grouping key: `activity_id`.")
+        lines.append("- Each grouped row may aggregate multiple task records (`n_tasks`).")
+        lines.append("- Aggregated metrics currently include count/status/timing.")
+        lines.append("")
 
     lines.append("---")
     generated_at = datetime.now().astimezone().strftime("%b %d, %Y at %I:%M %p %Z")

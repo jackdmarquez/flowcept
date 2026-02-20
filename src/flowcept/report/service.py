@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 from typing import Any, Dict, List
 
 from flowcept.report.aggregations import group_activities, summarize_objects
 from flowcept.report.loaders import load_records_from_db, read_jsonl, split_records
-from flowcept.report.renderers.provenance_card_markdown import render_provenance_card_markdown
+from flowcept.report.renderers.provenance_card_markdown import (
+    render_markdown_file_into_rich_terminal,
+    render_provenance_card_markdown,
+)
 from flowcept.report.renderers.provenance_report_pdf import render_provenance_report_pdf
 
 
@@ -37,6 +41,7 @@ def _resolve_input_mode(
 def generate_report(
     report_type: str = "provenance_card",
     format: str = "markdown",
+    print_markdown: bool = False,
     output_path: str | None = None,
     input_jsonl_path: str | None = None,
     records: List[Dict[str, Any]] | None = None,
@@ -51,6 +56,9 @@ def generate_report(
         Report identifier. Default is ``"provenance_card"``.
     format : str, optional
         Output format. Default is ``"markdown"``.
+    print_markdown : bool, optional
+        If True and the output format is markdown, print the rendered markdown
+        to terminal after generation using Rich.
     output_path : str, optional
         Output file path. If omitted, defaults to ``PROVENANCE_CARD.md``.
     input_jsonl_path : str, optional
@@ -115,6 +123,14 @@ def generate_report(
             object_summary=object_summary,
             output_path=output,
         )
+
+    if format == "markdown" and print_markdown:
+        if importlib.util.find_spec("rich") is None:
+            raise ModuleNotFoundError(
+                'Markdown terminal rendering requires Rich. Install with: pip install flowcept["extras"]'
+            )
+        render_markdown_file_into_rich_terminal(output)
+
     return {
         "report_type": report_type,
         "format": format,
