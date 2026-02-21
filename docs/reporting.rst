@@ -60,6 +60,30 @@ Markdown provenance cards are the default reporting mode.
        output_path="PROVENANCE_CARD_FROM_JSONL.md",
    )
 
+Render Markdown Directly in Terminal (Rich)
+-------------------------------------------
+
+You can optionally print the generated markdown report in a rich terminal:
+
+.. code-block:: python
+
+   from flowcept import Flowcept
+
+   Flowcept.generate_report(
+       report_type="provenance_card",
+       format="markdown",
+       records=my_records,
+       output_path="PROVENANCE_CARD.md",
+       print_markdown=True,
+   )
+
+If Rich is not installed and ``print_markdown=True``, Flowcept raises an error.
+Install Rich via:
+
+.. code-block:: bash
+
+   pip install flowcept["extras"]
+
 
 Input Modes
 -----------

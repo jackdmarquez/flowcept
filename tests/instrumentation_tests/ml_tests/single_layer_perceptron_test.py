@@ -359,6 +359,7 @@ class SingleLayerPerceptronTests(unittest.TestCase):
         self.assert_provenance_reports(
             workflow_id=Flowcept.current_workflow_id,
             workflow_title="Perceptron Train",
+            expect_aggregation_method=False,
             expected_activity_lines=[
                 "- **get_dataset** (subtype=`dataprep`)",
                 "- **train_and_validate** (subtype=`learning`)",
@@ -426,6 +427,7 @@ class SingleLayerPerceptronTests(unittest.TestCase):
         self.assert_provenance_reports(
             workflow_id=run_data["workflow_id"],
             workflow_title="Perceptron GridSearch",
+            expect_aggregation_method=True,
             expected_activity_lines=[
                 "- **get_dataset** (subtype=`dataprep`)",
                 "- **train_and_validate** (`n=5`, subtype=`learning`)",
@@ -436,7 +438,14 @@ class SingleLayerPerceptronTests(unittest.TestCase):
             ],
         )
 
-    def assert_provenance_reports(self, workflow_id, workflow_title, expected_activity_lines, expected_content_lines):
+    def assert_provenance_reports(
+        self,
+        workflow_id,
+        workflow_title,
+        expect_aggregation_method,
+        expected_activity_lines,
+        expected_content_lines,
+    ):
         """Generate and validate markdown/pdf provenance reports for a workflow."""
         card_md_path = f"./PROVENANCE_CARD_{workflow_id}.md"
         if os.path.exists(card_md_path):
@@ -454,7 +463,10 @@ class SingleLayerPerceptronTests(unittest.TestCase):
             card_text = f.read()
         assert f"# Workflow Provenance Card: {workflow_title}" in card_text
         assert workflow_title in card_text
-        assert "## Aggregation Method" in card_text
+        if expect_aggregation_method:
+            assert "## Aggregation Method" in card_text
+        else:
+            assert "## Aggregation Method" not in card_text
         assert "## Object Artifacts Summary" in card_text
         for line in expected_activity_lines:
             assert line in card_text

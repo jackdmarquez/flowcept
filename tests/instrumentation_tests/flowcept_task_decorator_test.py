@@ -65,9 +65,6 @@ def decorated_static_function4(x, y):
     return 6, 7
 
 
-
-
-
 @lightweight_flowcept_task
 def decorated_all_serializable(x: int):
     sleep(TIME_TO_SLEEP)
@@ -336,6 +333,27 @@ class DecoratorTests(unittest.TestCase):
         assert task["used"]["known_args"]["a"] == 123
         assert task["used"]["known_args"]["b"] == "abc"
         assert task["used"]["unknown_args"] == ['--unknown_arg', 'unk', "['a']"]
+
+    def test_custom_metadata_non_serializable_is_sanitized(self):
+        def local_nonserializable_fn(x):
+            return x
+
+        with Flowcept():
+            @flowcept_task(custom_metadata={"non_serializable_obj": object(), "non_serializable_fn": local_nonserializable_fn})
+            def _local_decorated(x):
+                return {"y": x}
+
+            _local_decorated(x=7)
+
+            tasks = [msg for msg in Flowcept.buffer if isinstance(msg, dict) and msg.get("type") == "task"]
+            assert tasks
+            task = tasks[-1]
+        obj_value = task["custom_metadata"]["non_serializable_obj"]
+        fn_value = task["custom_metadata"]["non_serializable_fn"]
+        assert isinstance(obj_value, str)
+        assert obj_value.startswith("object_instance_id_")
+        assert isinstance(fn_value, str)
+        assert fn_value.startswith("function_instance_id_")
 
     def test_online_offline(self):
         flowcept.configs.DB_FLUSH_MODE = "offline"
