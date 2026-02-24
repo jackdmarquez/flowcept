@@ -43,7 +43,7 @@ jobs:
         run: python -m pip install --upgrade pip
 
       - name: Install dependencies
-        run: python -m pip install ".[mqtt,mongo,redis,dev]" pandas pytz
+        run: python -m pip install ".[mqtt,mongo,redis,telemetry,dev]" pandas pytz
       
 
       - name: Run broker test only
