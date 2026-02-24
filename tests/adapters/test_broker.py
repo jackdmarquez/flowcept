@@ -58,11 +58,14 @@ class TestBroker(unittest.TestCase):
         client.username_pw_set(username, password)
 
         client.connect(host, port, 60)
+        client.loop_start()
         message = json.dumps(intersect_msg)
-        client.publish(topic, message, qos=qos, retain=True)
+        msg_info = client.publish(topic, message, qos=qos, retain=True)
+        msg_info.wait_for_publish()
         print(f" [x] Sent: {message} to topic '{topic}'")
 
         client.disconnect()
+        client.loop_stop()
 
         return msgId
 
