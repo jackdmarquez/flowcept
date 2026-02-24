@@ -2,6 +2,10 @@ name: Manual Test Broker
 on:
   workflow_dispatch:
     inputs:
+      branch:
+        description: Branch to run
+        required: false
+        default: "dev_jack"
       python-version:
         description: Python version
         required: false
@@ -19,6 +23,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.event.inputs.branch || github.ref_name }}
 
       - name: Set up Python ${{ github.event.inputs['python-version'] }}
         uses: actions/setup-python@v5
