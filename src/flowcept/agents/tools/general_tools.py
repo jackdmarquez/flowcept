@@ -1,11 +1,21 @@
 import json
+import tempfile
+from pathlib import Path
 from typing import List
 
+from flowcept import Flowcept
 from flowcept.agents.agents_utils import build_llm_model, ToolResult, normalize_message
 from flowcept.agents.flowcept_ctx_manager import mcp_flowcept
 from flowcept.agents.prompts.general_prompts import ROUTING_PROMPT, SMALL_TALK_PROMPT
 
 from flowcept.agents.tools.in_memory_queries.in_memory_queries_tools import run_df_query
+
+
+def _external_llm_enabled() -> bool:
+    """Return True when agent is configured to use an external LLM orchestrator."""
+    from flowcept.configs import AGENT
+
+    return bool(AGENT.get("external_llm", False))
 
 
 @mcp_flowcept.tool()
@@ -119,6 +129,63 @@ def reset_context() -> ToolResult:
 
 
 @mcp_flowcept.tool()
+def generate_workflow_provenance_card(workflow_id: str, output_path: str | None = None) -> ToolResult:
+    """
+    Generate and return markdown workflow provenance content for a specific workflow identifier.
+
+    Parameters
+    ----------
+    workflow_id : str
+        Workflow identifier used to query workflow/task/object records from the database.
+    output_path : str | None, optional
+        Optional output path. If omitted, a temporary file is used and removed.
+
+    Returns
+    -------
+    ToolResult
+        ``code=201`` with markdown text payload on success, or an error payload on failure.
+    """
+    try:
+        if not workflow_id:
+            return ToolResult(code=400, result="workflow_id is required.")
+        if output_path:
+            output = output_path
+            should_cleanup = False
+        else:
+            tmp = tempfile.NamedTemporaryFile(prefix="flowcept_card_", suffix=".md", delete=False)
+            tmp.close()
+            output = tmp.name
+            should_cleanup = True
+
+        try:
+            stats = Flowcept.generate_report(
+                report_type="provenance_card",
+                format="markdown",
+                workflow_id=workflow_id,
+                output_path=output,
+            )
+            markdown_text = Path(output).read_text(encoding="utf-8")
+            return ToolResult(
+                code=201,
+                result={
+                    "workflow_id": workflow_id,
+                    "report_type": "provenance_card",
+                    "format": "markdown",
+                    "markdown": markdown_text,
+                    "output": stats.get("output"),
+                },
+            )
+        finally:
+            if should_cleanup:
+                try:
+                    Path(output).unlink(missing_ok=True)
+                except Exception:
+                    pass
+    except Exception as e:
+        return ToolResult(code=499, result=str(e))
+
+
+@mcp_flowcept.tool()
 def prompt_handler(message: str) -> ToolResult:
     """
     Routes a user message using an LLM to classify its intent.
@@ -146,6 +213,16 @@ def prompt_handler(message: str) -> ToolResult:
         return show_records()
     if "@reset records" in message:
         return reset_records()
+
+    if _external_llm_enabled():
+        return ToolResult(
+            code=201,
+            result=(
+                "external_llm mode is enabled. Internal LLM routing is disabled. "
+                "Use explicit commands such as 'save', 'result = df ...', "
+                "'reset context', '@record', '@show records', or '@reset records'."
+            ),
+        )
 
     llm = build_llm_model()
 

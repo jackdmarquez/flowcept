@@ -249,3 +249,22 @@ class FlowceptAgentContextManager(BaseAgentContextManager):
 # Exporting the ctx_manager and the mcp_flowcept
 ctx_manager = FlowceptAgentContextManager()
 mcp_flowcept = FastMCP("FlowceptAgent", lifespan=ctx_manager.lifespan, stateless_http=True)
+
+EMPTY_DF_MESSAGE = "Current df is empty or null."
+
+
+def get_df_context():
+    """
+    Return active agent DataFrame context objects.
+
+    Returns
+    -------
+    tuple
+        ``(df, schema, value_examples, custom_user_guidance)`` from lifespan context.
+    """
+    ctx = mcp_flowcept.get_context()
+    df = ctx.request_context.lifespan_context.df
+    schema = ctx.request_context.lifespan_context.tasks_schema
+    value_examples = ctx.request_context.lifespan_context.value_examples
+    custom_user_guidance = ctx.request_context.lifespan_context.custom_guidance
+    return df, schema, value_examples, custom_user_guidance

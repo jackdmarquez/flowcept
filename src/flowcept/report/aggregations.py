@@ -46,8 +46,8 @@ def fmt_timestamp_utc(ts: Any) -> str:
     return datetime.fromtimestamp(val, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def group_transformations(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Aggregate tasks by activity identifier."""
+def group_activities(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Aggregate task rows by ``activity_id``."""
     grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for t in tasks:
         activity = str(t.get("activity_id", "unknown"))
@@ -57,6 +57,14 @@ def group_transformations(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for activity, members in grouped.items():
         elapsed_values = [elapsed_seconds(m.get("started_at"), m.get("ended_at")) for m in members]
         elapsed_values = [v for v in elapsed_values if v is not None]
+        elapsed_sorted = sorted(elapsed_values)
+        elapsed_median = None
+        if elapsed_sorted:
+            mid = len(elapsed_sorted) // 2
+            if len(elapsed_sorted) % 2 == 1:
+                elapsed_median = elapsed_sorted[mid]
+            else:
+                elapsed_median = (elapsed_sorted[mid - 1] + elapsed_sorted[mid]) / 2.0
         status_counts = Counter(str(m.get("status", "unknown")) for m in members)
         starts = [as_float(m.get("started_at")) for m in members if as_float(m.get("started_at")) is not None]
         ends = [as_float(m.get("ended_at")) for m in members if as_float(m.get("ended_at")) is not None]
@@ -67,6 +75,7 @@ def group_transformations(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "status_counts": dict(status_counts),
                 "elapsed_sum": sum(elapsed_values) if elapsed_values else None,
                 "elapsed_avg": (sum(elapsed_values) / len(elapsed_values)) if elapsed_values else None,
+                "elapsed_median": elapsed_median,
                 "elapsed_max": max(elapsed_values) if elapsed_values else None,
                 "started_at_min": min(starts) if starts else None,
                 "ended_at_max": max(ends) if ends else None,
@@ -75,6 +84,11 @@ def group_transformations(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     rows.sort(key=lambda r: r["started_at_min"] if r["started_at_min"] is not None else float("inf"))
     return rows
+
+
+def group_transformations(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Backward-compatible alias to ``group_activities``."""
+    return group_activities(tasks)
 
 
 def summarize_objects(objects: Iterable[Dict[str, Any]]) -> Dict[str, Any]:

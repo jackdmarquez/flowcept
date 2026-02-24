@@ -58,6 +58,7 @@ class Flowcept(object):
         campaign_id: str = None,
         workflow_id: str = None,
         workflow_name: str = None,
+        workflow_subtype: str = None,
         workflow_args: Dict = None,
         start_persistence=True,
         check_safe_stops=True,  # TODO add to docstring
@@ -91,6 +92,10 @@ class Flowcept(object):
 
         workflow_name : str, optional
             A descriptive name for the workflow.
+
+        workflow_subtype : str, optional
+            Optional subtype for workflow categorization
+            (e.g., ``ml_workflow``, ``data_prep_workflow``).
 
         workflow_args : str, optional
             Additional arguments related to the workflow.
@@ -144,6 +149,7 @@ class Flowcept(object):
             self.bundle_exec_id = str(bundle_exec_id)
 
         self.workflow_name = workflow_name
+        self.workflow_subtype = workflow_subtype
         self.workflow_args = workflow_args
         should_delete_buffer_file = (
             flowcept.configs.DELETE_BUFFER_FILE if delete_buffer_file is None else delete_buffer_file
@@ -385,22 +391,58 @@ class Flowcept(object):
     def generate_report(
         report_type: str = "provenance_card",
         format: str = "markdown",
+        print_markdown: bool = False,
         output_path: str | None = None,
         input_jsonl_path: str | None = None,
         records: List[Dict[str, Any]] | None = None,
         workflow_id: str | None = None,
         campaign_id: str | None = None,
     ) -> Dict[str, Any]:
-        """Generate a report from JSONL, records, or DB data.
+        """Generate a Flowcept report from JSONL, records, or DB data.
 
-        This method is a lightweight facade that delegates implementation to
-        ``flowcept.report.service.generate_report``.
+        Parameters
+        ----------
+        report_type : str, optional
+            Report identifier. Supported values are ``"provenance_card"`` and
+            ``"provenance_report"``. Default is ``"provenance_card"``.
+        format : str, optional
+            Output format. ``"provenance_card"`` supports only ``"markdown"``,
+            and ``"provenance_report"`` supports only ``"pdf"``.
+            Default is ``"markdown"``.
+        print_markdown : bool, optional
+            When ``True`` and ``format="markdown"``, render the generated
+            markdown report to the terminal using Rich (install it with pip install flowcept[extras])
+        output_path : str, optional
+            Destination path for the generated report file.
+        input_jsonl_path : str, optional
+            Path to a Flowcept JSONL buffer file used as report input.
+        records : list of dict, optional
+            In-memory workflow/task/object records used as report input.
+        workflow_id : str, optional
+            Workflow identifier for DB query mode.
+        campaign_id : str, optional
+            Campaign identifier for DB query mode.
+
+        Returns
+        -------
+        dict
+            Report generation metadata including output path and input mode.
+
+        Raises
+        ------
+        ValueError
+            If input-mode selection or report type/format is invalid.
+        FileNotFoundError
+            If ``input_jsonl_path`` is selected but the file does not exist.
+        ModuleNotFoundError
+            If ``print_markdown=True`` without Rich installed.
         """
         from flowcept.report.service import generate_report
 
         return generate_report(
             report_type=report_type,
             format=format,
+            print_markdown=print_markdown,
             output_path=output_path,
             input_jsonl_path=input_jsonl_path,
             records=records,
@@ -536,6 +578,8 @@ class Flowcept(object):
 
         if self.workflow_name:
             wf_obj.name = self.workflow_name
+        if self.workflow_subtype:
+            wf_obj.subtype = self.workflow_subtype
         if self.workflow_args:
             wf_obj.used = self.workflow_args
 

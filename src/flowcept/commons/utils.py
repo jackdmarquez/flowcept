@@ -180,10 +180,10 @@ def replace_non_serializable(obj):
         else:
             return obj
     else:
-        if hasattr(obj, "to_flowcept_dict"):
-            return obj.to_flowcept_dict()
-        elif hasattr(obj, "to_dict"):
-            return obj.to_dict()
+        cls_dict = type(obj).__dict__
+        m = cls_dict.get("to_flowcept_dict") or cls_dict.get("to_dict")
+        if m is not None:
+            return m(obj)
         elif isinstance(obj, __DICT__CLASSES):
             return obj.__dict__
         else:
