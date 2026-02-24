@@ -40,6 +40,7 @@ class TestBroker(unittest.TestCase):
         if topic is None:
             topic = "s3m-org/s3m-facility/s3m-system/s3m-subsystem/s3m-service/request"
         intersect_msg = {
+            "msgId": msgId,
             "messageId": msgId,
             "operationId": "IntersectS3M.test_intersect_message",
             "contentType": "application/json",
@@ -80,7 +81,7 @@ class TestBroker(unittest.TestCase):
             sleep(5)
 
         assert assert_by_querying_tasks_until(
-            {"task_id": msg_id},
+            {"custom_metadata.msgId": msg_id},
         )
 
     @classmethod
