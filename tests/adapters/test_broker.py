@@ -22,11 +22,17 @@ class TestBroker(unittest.TestCase):
         port = settings["adapters"]["broker_mqtt"]["port"]
         username = settings["adapters"]["broker_mqtt"]["username"]
         password = settings["adapters"]["broker_mqtt"]["password"]
-        topic = settings["adapters"]["broker_mqtt"]["queues"][0]
+        topic = TestBroker._get_publishable_topic(settings["adapters"]["broker_mqtt"]["queues"][0])
         qos = 2  # settings["adapters"]["broker_mqtt"]["qos"]
 
         for i in range(2):
             TestBroker.publish_msg(host, port, username, password, qos, topic)
+
+    @staticmethod
+    def _get_publishable_topic(topic: str) -> str:
+        if "+" not in topic and "#" not in topic:
+            return topic
+        return topic.replace("+", "flowcept-test").replace("#", "flowcept-test")
 
     @staticmethod
     def publish_msg(host, port, username, password, qos, topic=None):
