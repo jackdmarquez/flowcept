@@ -45,6 +45,10 @@ class BaseInterceptor(object):
             from flowcept.flowceptor.adapters.brokers.mqtt_interceptor import MQTTBrokerInterceptor
 
             return MQTTBrokerInterceptor()
+        elif kind == "broker_amqp":
+            from flowcept.flowceptor.adapters.brokers.amqp_interceptor import AMQPBrokerInterceptor
+
+            return AMQPBrokerInterceptor()
         elif kind == "dask_worker":
             from flowcept.flowceptor.adapters.dask.dask_interceptor import DaskWorkerInterceptor
 

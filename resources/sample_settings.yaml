@@ -145,6 +145,46 @@ adapters:
       ended_at: ~
       registered_at: ~
 
+  broker_amqp:
+    kind: broker_amqp
+    host: localhost
+    port: 5672
+    virtual_host: /
+    username: "${RABBITMQ_USERNAME}"
+    password: "${RABBITMQ_PASSWORD}"
+    exchanges:
+      - name: intersect-messages
+        type: topic
+        durable: true
+        passive: true
+        routing_keys:
+          - "#"
+    observer_queue:
+      name: ""
+      durable: false
+      exclusive: true
+      auto_delete: true
+      prefetch_count: 100
+    task_subtype: intersect_amqp_msg
+    payload_policy:
+      mode: metadata_plus_hash
+      max_payload_bytes: 65536
+      parse_json_preview: true
+    tracked_keys:
+      task_id: message_id
+      activity_id: routing_key
+      custom_metadata:
+        - exchange
+        - routing_key
+        - correlation_id
+        - reply_to
+        - content_type
+        - headers
+        - delivery_mode
+        - priority
+        - timestamp
+        - redelivered
+
   mlflow:
     kind: mlflow
     file_path: mlflow.db
