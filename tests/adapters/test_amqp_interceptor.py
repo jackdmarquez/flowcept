@@ -9,12 +9,13 @@ import pytest
 
 from flowcept.commons.sanitization import REDACTED
 from flowcept.flowcept_api.flowcept_controller import Flowcept
+from flowcept.flowceptor.adapters.base_interceptor import BaseInterceptor
 from flowcept.flowceptor.adapters.brokers.amqp_interceptor import AMQPBrokerInterceptor
 
 
 def _interceptor():
     interceptor = AMQPBrokerInterceptor()
-    interceptor._max_payload_bytes = 64
+    interceptor._max_payload_bytes = 128
     return interceptor
 
 
@@ -94,6 +95,22 @@ def test_prepare_task_msg_uses_header_message_id_then_deterministic_fallback():
     assert fallback_1.task_id != "header-id"
 
 
+def test_prepare_task_msg_uses_json_payload_message_id_and_operation_id():
+    interceptor = _interceptor()
+
+    task = interceptor.prepare_task_msg(
+        method=_method(routing_key="org.fac.sys.sub.service.event"),
+        properties=_properties(message_id=None, headers={}),
+        body=b'{"messageId": "payload-id", "operationId": "IntersectChess.collect"}',
+    )
+    task_dict = task.to_dict()
+
+    assert task_dict["task_id"] == "payload-id"
+    assert task_dict["activity_id"] == "IntersectChess.collect"
+    assert task_dict["custom_metadata"]["intersect_message_id"] == "payload-id"
+    assert task_dict["custom_metadata"]["intersect_operation_id"] == "IntersectChess.collect"
+
+
 def test_payload_preview_size_text_and_binary_handling():
     interceptor = _interceptor()
     interceptor._max_payload_bytes = 4
@@ -147,13 +164,106 @@ def test_setup_observer_queue_passive_exchange_generated_exclusive_queue():
         durable=True,
         passive=True,
     )
-    channel.queue_declare.assert_called_once_with(queue="", durable=False, exclusive=True, auto_delete=True)
+    channel.queue_declare.assert_called_once_with(
+        queue="",
+        durable=False,
+        exclusive=True,
+        auto_delete=True,
+        arguments={},
+    )
     channel.queue_bind.assert_called_once_with(
         exchange="intersect-messages",
         queue="observer-queue",
         routing_key="#",
     )
     channel.basic_qos.assert_called_once_with(prefetch_count=100)
+
+
+def test_setup_observer_queue_passes_queue_arguments():
+    interceptor = _interceptor()
+    interceptor._observer_queue["arguments"] = {"x-message-ttl": 86400000, "x-max-length": 100000}
+    channel = MagicMock()
+    channel.queue_declare.return_value = SimpleNamespace(method=SimpleNamespace(queue="observer-queue"))
+    interceptor._channel = channel
+
+    interceptor._setup_observer_queue()
+
+    channel.queue_declare.assert_called_once_with(
+        queue="",
+        durable=False,
+        exclusive=True,
+        auto_delete=True,
+        arguments={"x-message-ttl": 86400000, "x-max-length": 100000},
+    )
+
+
+def test_process_data_events_loop_exits_when_stopping_is_set():
+    interceptor = _interceptor()
+    connection = MagicMock()
+    connection.process_data_events.side_effect = lambda time_limit: interceptor._stopping.set()
+    interceptor._connection = connection
+
+    interceptor._process_data_events_until_stopped()
+
+    connection.process_data_events.assert_called_once_with(time_limit=1.0)
+
+
+def test_observe_consumes_only_observer_queue_and_exits_on_stop():
+    interceptor = _interceptor()
+    channel = MagicMock()
+    connection = MagicMock()
+    connection.process_data_events.side_effect = lambda time_limit: interceptor._stopping.set()
+    channel.queue_declare.return_value = SimpleNamespace(method=SimpleNamespace(queue="observer-queue"))
+    channel.is_open = True
+    connection.is_open = True
+    interceptor._connect = MagicMock(side_effect=lambda: setattr(interceptor, "_connection", connection))
+    interceptor._channel = channel
+    interceptor._connect.side_effect = lambda: (
+        setattr(interceptor, "_connection", connection),
+        setattr(interceptor, "_channel", channel),
+    )
+
+    interceptor.observe()
+
+    channel.basic_consume.assert_called_once_with(
+        queue="observer-queue",
+        on_message_callback=interceptor.callback,
+        auto_ack=False,
+    )
+    assert channel.basic_consume.call_args.kwargs["queue"] != "production-queue"
+
+
+def test_observe_retries_after_recoverable_amqp_exception(monkeypatch):
+    import flowcept.flowceptor.adapters.brokers.amqp_interceptor as amqp_module
+
+    interceptor = _interceptor()
+    channel = MagicMock()
+    connection = MagicMock()
+    connection.process_data_events.side_effect = lambda time_limit: interceptor._stopping.set()
+    channel.queue_declare.return_value = SimpleNamespace(method=SimpleNamespace(queue="observer-queue"))
+    channel.is_open = True
+    connection.is_open = True
+    attempts = {"count": 0}
+
+    def connect():
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise amqp_module.pika.exceptions.StreamLostError("connection dropped")
+        interceptor._connection = connection
+        interceptor._channel = channel
+
+    interceptor._connect = MagicMock(side_effect=connect)
+    interceptor._sleep_before_reconnect = MagicMock()
+
+    interceptor.observe()
+
+    assert interceptor._connect.call_count == 2
+    interceptor._sleep_before_reconnect.assert_called_once()
+    channel.basic_consume.assert_called_once_with(
+        queue="observer-queue",
+        on_message_callback=interceptor.callback,
+        auto_ack=False,
+    )
 
 
 def test_callback_acks_after_successful_intercept(monkeypatch):
@@ -194,3 +304,18 @@ def test_missing_pika_error_is_explicit(monkeypatch):
 
     with pytest.raises(ModuleNotFoundError, match="flowcept\\[amqp\\]"):
         interceptor._connect()
+
+
+def test_stop_does_not_close_amqp_from_main_thread(monkeypatch):
+    interceptor = _interceptor()
+    channel = MagicMock()
+    connection = MagicMock()
+    interceptor._channel = channel
+    interceptor._connection = connection
+    monkeypatch.setattr(BaseInterceptor, "stop", lambda *args, **kwargs: None)
+
+    interceptor.stop()
+
+    assert interceptor._stopping.is_set()
+    channel.close.assert_not_called()
+    connection.close.assert_not_called()

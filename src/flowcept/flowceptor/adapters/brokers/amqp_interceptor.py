@@ -6,7 +6,6 @@ import json
 import os
 import threading
 from hashlib import sha256
-from time import sleep
 from typing import Any, Dict
 
 try:
@@ -56,6 +55,7 @@ class AMQPBrokerInterceptor(BaseInterceptor):
         self._retry_attempts = int(self._settings.get("connection_retry_attempts", 12))
         self._retry_initial_delay = float(self._settings.get("connection_retry_initial_delay_secs", 1))
         self._retry_max_delay = float(self._settings.get("connection_retry_max_delay_secs", 30))
+        self._process_data_events_time_limit = float(self._settings.get("process_data_events_time_limit_secs", 1.0))
         self._consumer_tag = None
         self._connection = None
         self._channel = None
@@ -97,6 +97,7 @@ class AMQPBrokerInterceptor(BaseInterceptor):
             durable=bool(self._observer_queue.get("durable", False)),
             exclusive=bool(self._observer_queue.get("exclusive", True)),
             auto_delete=bool(self._observer_queue.get("auto_delete", True)),
+            arguments=self._observer_queue.get("arguments", None),
         )
         self._queue_name = queue_result.method.queue
         for routing_key in self._routing_keys:
@@ -107,30 +108,6 @@ class AMQPBrokerInterceptor(BaseInterceptor):
             )
         self._channel.basic_qos(prefetch_count=self._prefetch_count)
 
-    def _connect_with_retry(self):
-        delay = self._retry_initial_delay
-        last_error = None
-        for attempt in range(1, self._retry_attempts + 1):
-            if self._stopping.is_set():
-                return
-            try:
-                self._connect()
-                self._setup_observer_queue()
-                self.logger.info(
-                    f"AMQP observer bound to exchange '{self._exchange_name}' queue '{self._queue_name}'."
-                )
-                return
-            except Exception as exc:
-                last_error = exc
-                self.logger.warning(
-                    f"AMQP observer setup failed on attempt {attempt}/{self._retry_attempts}: {exc}"
-                )
-                self._close_amqp()
-                if attempt < self._retry_attempts:
-                    sleep(delay)
-                    delay = min(delay * 2, self._retry_max_delay)
-        raise RuntimeError("AMQP observer could not connect after configured retries.") from last_error
-
     def start(self, bundle_exec_id, check_safe_stops: bool = True) -> "AMQPBrokerInterceptor":
         """Start the observer thread."""
         super().start(bundle_exec_id, check_safe_stops=check_safe_stops)
@@ -140,23 +117,71 @@ class AMQPBrokerInterceptor(BaseInterceptor):
         return self
 
     def observe(self):
-        """Connect and consume from the private observer queue."""
-        try:
-            self._connect_with_retry()
-            if self._stopping.is_set() or self._channel is None:
-                return
-            self._consumer_tag = self._channel.basic_consume(
-                queue=self._queue_name,
-                on_message_callback=self.callback,
-                auto_ack=False,
-            )
-            self._channel.start_consuming()
-        except Exception as exc:
-            if not self._stopping.is_set():
-                self.logger.exception(exc)
+        """Connect, consume, and reconnect from the observer thread."""
+        delay = self._retry_initial_delay
+        consecutive_failures = 0
+        while not self._stopping.is_set():
+            try:
+                self._connect()
+                self._setup_observer_queue()
+                self._consumer_tag = self._channel.basic_consume(
+                    queue=self._queue_name,
+                    on_message_callback=self.callback,
+                    auto_ack=False,
+                )
+                self.logger.info(f"AMQP observer bound to exchange '{self._exchange_name}' queue '{self._queue_name}'.")
+                delay = self._retry_initial_delay
+                consecutive_failures = 0
+                self._process_data_events_until_stopped()
+            except ModuleNotFoundError:
                 raise
-        finally:
-            self._close_amqp()
+            except self._recoverable_amqp_exceptions() as exc:
+                consecutive_failures += 1
+                if self._stopping.is_set():
+                    break
+                self.logger.warning(
+                    "AMQP observer connection/setup failed; "
+                    f"will retry in {delay:.1f}s after sanitized error: {sanitize_value(str(exc))}"
+                )
+            except Exception as exc:
+                consecutive_failures += 1
+                if self._stopping.is_set():
+                    break
+                self.logger.error(
+                    f"Unexpected AMQP observer error; retrying in {delay:.1f}s: {sanitize_value(str(exc))}"
+                )
+            finally:
+                self._close_amqp()
+
+            if self._stopping.is_set():
+                break
+            if self._retry_attempts > 0 and consecutive_failures >= self._retry_attempts:
+                self.logger.warning(
+                    f"AMQP observer has failed {consecutive_failures} consecutive times; continuing retries."
+                )
+            self._sleep_before_reconnect(delay)
+            delay = min(delay * 2, self._retry_max_delay)
+
+    def _process_data_events_until_stopped(self):
+        while not self._stopping.is_set():
+            self._connection.process_data_events(time_limit=self._process_data_events_time_limit)
+
+    @staticmethod
+    def _recoverable_amqp_exceptions():
+        if pika is None:
+            return ()
+        names = (
+            "AMQPConnectionError",
+            "StreamLostError",
+            "ChannelClosedByBroker",
+            "ConnectionClosedByBroker",
+            "AMQPChannelError",
+        )
+        return tuple(getattr(pika.exceptions, name) for name in names if hasattr(pika.exceptions, name))
+
+    def _sleep_before_reconnect(self, delay):
+        if self._stopping.wait(delay):
+            return
 
     def callback(self, channel, method, properties, body):
         """Convert one AMQP delivery and ack only after buffering succeeds."""
@@ -165,7 +190,9 @@ class AMQPBrokerInterceptor(BaseInterceptor):
             task_obj = self.prepare_task_msg(method=method, properties=properties, body=body)
             self.intercept(task_obj.to_dict())
         except Exception as exc:
-            self.logger.error(f"Failed to convert AMQP message; rejecting delivery {delivery_tag}: {exc}")
+            self.logger.error(
+                f"Failed to convert AMQP message; rejecting delivery {delivery_tag}: {sanitize_value(str(exc))}"
+            )
             self._reject_without_requeue(channel, delivery_tag)
             return
         channel.basic_ack(delivery_tag=delivery_tag)
@@ -184,11 +211,7 @@ class AMQPBrokerInterceptor(BaseInterceptor):
         headers = dict(getattr(properties, "headers", None) or {})
         content_type = getattr(properties, "content_type", None)
         payload_hash = sha256(body).hexdigest()
-        task_id = (
-            getattr(properties, "message_id", None)
-            or headers.get("messageId")
-            or self._fallback_task_id(exchange, routing_key, body, properties)
-        )
+        task_id = getattr(properties, "message_id", None) or headers.get("messageId")
         used = {
             "payload_sha256": payload_hash,
             "payload_size_bytes": len(body),
@@ -211,11 +234,20 @@ class AMQPBrokerInterceptor(BaseInterceptor):
             "redelivered": getattr(method, "redelivered", None),
         }
         custom_metadata.update(self._parse_routing_key(routing_key))
+        intersect_message_id = self._extract_json_field(preview, "messageId")
+        intersect_operation_id = self._extract_json_field(preview, "operationId")
+        if intersect_message_id is not None:
+            custom_metadata["intersect_message_id"] = intersect_message_id
+        if intersect_operation_id is not None:
+            custom_metadata["intersect_operation_id"] = intersect_operation_id
+
+        task_id = task_id or intersect_message_id or self._fallback_task_id(exchange, routing_key, body, properties)
+        activity_id = intersect_operation_id or routing_key
 
         return TaskObject.from_dict(
             {
                 "task_id": task_id,
-                "activity_id": routing_key,
+                "activity_id": activity_id,
                 "workflow_id": Flowcept.current_workflow_id,
                 "campaign_id": Flowcept.campaign_id,
                 "subtype": self._task_subtype,
@@ -223,6 +255,14 @@ class AMQPBrokerInterceptor(BaseInterceptor):
                 "custom_metadata": sanitize_value(custom_metadata),
             }
         )
+
+    @staticmethod
+    def _extract_json_field(payload_preview, key):
+        if isinstance(payload_preview, dict):
+            value = payload_preview.get(key)
+            if isinstance(value, (str, int, float)):
+                return str(value)
+        return None
 
     @staticmethod
     def _fallback_task_id(exchange: str, routing_key: str, body: bytes, properties) -> str:
@@ -263,31 +303,33 @@ class AMQPBrokerInterceptor(BaseInterceptor):
     def _close_amqp(self):
         try:
             if self._channel is not None and getattr(self._channel, "is_open", True):
+                if self._consumer_tag:
+                    try:
+                        self._channel.basic_cancel(self._consumer_tag)
+                    except Exception as exc:
+                        self.logger.warning(
+                            f"Exception while cancelling AMQP consumer in observer thread: {sanitize_value(str(exc))}"
+                        )
                 self._channel.close()
         except Exception as exc:
-            self.logger.warning(f"Exception while closing AMQP channel: {exc}")
+            self.logger.warning(f"Exception while closing AMQP channel: {sanitize_value(str(exc))}")
         try:
             if self._connection is not None and getattr(self._connection, "is_open", True):
                 self._connection.close()
         except Exception as exc:
-            self.logger.warning(f"Exception while closing AMQP connection: {exc}")
+            self.logger.warning(f"Exception while closing AMQP connection: {sanitize_value(str(exc))}")
         self._channel = None
         self._connection = None
+        self._consumer_tag = None
 
     def stop(self, check_safe_stops: bool = True) -> bool:
         """Stop AMQP consumption and close Flowcept buffering."""
         self.logger.debug("AMQP interceptor stopping...")
         self._stopping.set()
-        try:
-            if self._channel is not None and getattr(self._channel, "is_open", True):
-                if self._consumer_tag:
-                    self._channel.basic_cancel(self._consumer_tag)
-                self._channel.stop_consuming()
-        except Exception as exc:
-            self.logger.warning(f"Exception while cancelling AMQP consumer: {exc}")
-        self._close_amqp()
         if self._observer_thread and self._observer_thread.is_alive():
             self._observer_thread.join(timeout=10)
+        if self._observer_thread and self._observer_thread.is_alive():
+            self.logger.warning("AMQP observer thread did not stop within 10 seconds; leaving AMQP close to thread.")
         super().stop(check_safe_stops=check_safe_stops)
         self.logger.debug("AMQP interceptor stopped.")
         return True

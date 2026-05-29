@@ -165,6 +165,15 @@ adapters:
       exclusive: true
       auto_delete: true
       prefetch_count: 100
+      arguments: {}
+      # Production/reliable observer queue mode:
+      # name: flowcept-provenance-observer
+      # durable: true
+      # exclusive: false
+      # auto_delete: false
+      # arguments:
+      #   x-message-ttl: 86400000
+      #   x-max-length: 100000
     task_subtype: intersect_amqp_msg
     payload_policy:
       mode: metadata_plus_hash
