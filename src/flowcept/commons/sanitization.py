@@ -34,6 +34,13 @@ def _is_sensitive_key(key: str) -> bool:
     return any(part in normalized for part in SENSITIVE_KEY_PARTS)
 
 
+def _mongo_safe_key(key: str) -> str:
+    """Rename keys that MongoDB update documents may treat as operators/paths."""
+    if key.startswith("$"):
+        key = f"_dollar_{key[1:]}"
+    return key.replace(".", "_")
+
+
 def _redact_url_credentials(value: str) -> str:
     """Redact credentials embedded in URL-like strings."""
     try:
@@ -48,24 +55,24 @@ def _redact_url_credentials(value: str) -> str:
         if parsed.port is not None:
             host = f"{host}:{parsed.port}"
         redacted_netloc = f"{REDACTED}@{host}" if host else REDACTED
-        return urlunsplit(
-            SplitResult(parsed.scheme, redacted_netloc, parsed.path, parsed.query, parsed.fragment)
-        )
+        return urlunsplit(SplitResult(parsed.scheme, redacted_netloc, parsed.path, parsed.query, parsed.fragment))
 
     return _URL_CREDENTIALS_PATTERN.sub(rf"\g<scheme>{REDACTED}@", value)
 
 
-def sanitize_value(value: Any) -> Any:
-    """Recursively redact sensitive keys and URI credentials."""
+def sanitize_value(value: Any, mongo_safe: bool = True) -> Any:
+    """Recursively redact sensitive values and optionally make dict keys Mongo-safe."""
     if isinstance(value, dict):
-        return {
-            str(key): REDACTED if _is_sensitive_key(str(key)) else sanitize_value(item)
-            for key, item in value.items()
-        }
+        sanitized = {}
+        for key, item in value.items():
+            string_key = str(key)
+            safe_key = _mongo_safe_key(string_key) if mongo_safe else string_key
+            sanitized[safe_key] = REDACTED if _is_sensitive_key(string_key) else sanitize_value(item, mongo_safe)
+        return sanitized
     if isinstance(value, list):
-        return [sanitize_value(item) for item in value]
+        return [sanitize_value(item, mongo_safe) for item in value]
     if isinstance(value, tuple):
-        return [sanitize_value(item) for item in value]
+        return [sanitize_value(item, mongo_safe) for item in value]
     if isinstance(value, str):
         if _OPENAI_KEY_PATTERN.search(value):
             return REDACTED

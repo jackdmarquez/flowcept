@@ -26,6 +26,45 @@ def test_sanitize_value_redacts_nested_secret_keys_and_uri_credentials():
     assert sanitized["items"][1] == f"redis://{REDACTED}@redis:6379/0"
 
 
+def test_sanitize_value_renames_mongo_operator_keys():
+    sanitized = sanitize_value({"$ref": "#/components/schemas/X", "$schema": "https://json-schema.org"})
+
+    assert sanitized == {
+        "_dollar_ref": "#/components/schemas/X",
+        "_dollar_schema": "https://json-schema.org",
+    }
+
+
+def test_sanitize_value_renames_nested_schema_refs_recursively():
+    value = {
+        "payload": {
+            "schema": {
+                "properties": {
+                    "status": {"$ref": "#/components/schemas/IntersectCoreStatus"},
+                }
+            }
+        }
+    }
+
+    sanitized = sanitize_value(value)
+
+    assert sanitized["payload"]["schema"]["properties"]["status"] == {
+        "_dollar_ref": "#/components/schemas/IntersectCoreStatus"
+    }
+
+
+def test_sanitize_value_renames_dotted_keys():
+    sanitized = sanitize_value({"a.b": {"c.d": 1}})
+
+    assert sanitized == {"a_b": {"c_d": 1}}
+
+
+def test_sanitize_value_recurses_into_lists_of_dicts():
+    sanitized = sanitize_value([{"$ref": "#/components/schemas/X"}, {"a.b": "value"}])
+
+    assert sanitized == [{"_dollar_ref": "#/components/schemas/X"}, {"a_b": "value"}]
+
+
 def test_workflow_enrich_redacts_flowcept_settings(monkeypatch):
     monkeypatch.setattr(
         workflow_object_module,

@@ -47,7 +47,8 @@ dependencies = [
     "omegaconf",
     "numpy",
     "msgpack",
-    "orjson"
+    "orjson",
+    "pandas>=2.3.3",
 ]
 
 [project.optional-dependencies]

@@ -25,6 +25,7 @@ from flowcept.configs import (
     ENRICH_MESSAGES,
     MONGO_ENABLED,
     LMDB_ENABLED,
+    KVDB_ENABLED,
 )
 from flowcept.flowceptor.consumers.consumer_utils import (
     remove_empty_fields_from_dict,
@@ -119,7 +120,7 @@ class DocumentInserter(BaseConsumer):
             if wf_id:
                 message["workflow_id"] = wf_id
 
-        if "campaign_id" not in message:
+        if KVDB_ENABLED and "campaign_id" not in message:
             try:
                 campaign_id = self._mq_dao._keyvalue_dao.get_key("current_campaign_id")
                 if campaign_id:

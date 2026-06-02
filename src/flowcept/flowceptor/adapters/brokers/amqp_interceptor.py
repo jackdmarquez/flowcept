@@ -52,6 +52,7 @@ class AMQPBrokerInterceptor(BaseInterceptor):
         payload_policy = self._settings.get("payload_policy", {}) or {}
         self._max_payload_bytes = int(payload_policy.get("max_payload_bytes", 65536))
         self._parse_json_preview = bool(payload_policy.get("parse_json_preview", True))
+        self._log_observed_messages = bool(self._settings.get("log_observed_messages", False))
         self._retry_attempts = int(self._settings.get("connection_retry_attempts", 12))
         self._retry_initial_delay = float(self._settings.get("connection_retry_initial_delay_secs", 1))
         self._retry_max_delay = float(self._settings.get("connection_retry_max_delay_secs", 30))
@@ -189,6 +190,7 @@ class AMQPBrokerInterceptor(BaseInterceptor):
         try:
             task_obj = self.prepare_task_msg(method=method, properties=properties, body=body)
             self.intercept(task_obj.to_dict())
+            self._log_observed_message(task_obj)
         except Exception as exc:
             self.logger.error(
                 f"Failed to convert AMQP message; rejecting delivery {delivery_tag}: {sanitize_value(str(exc))}"
@@ -196,6 +198,22 @@ class AMQPBrokerInterceptor(BaseInterceptor):
             self._reject_without_requeue(channel, delivery_tag)
             return
         channel.basic_ack(delivery_tag=delivery_tag)
+
+    def _log_observed_message(self, task_obj: TaskObject):
+        if not self._log_observed_messages:
+            return
+        custom_metadata = task_obj.custom_metadata or {}
+        used = task_obj.used or {}
+        self.logger.info(
+            "Observed AMQP message "
+            f"task_id={task_obj.task_id} "
+            f"activity_id={task_obj.activity_id} "
+            f"campaign_id={task_obj.campaign_id} "
+            f"exchange={custom_metadata.get('exchange')} "
+            f"routing_key={custom_metadata.get('routing_key')} "
+            f"payload_size_bytes={used.get('payload_size_bytes')} "
+            f"content_type={used.get('content_type')}"
+        )
 
     @staticmethod
     def _reject_without_requeue(channel, delivery_tag):
@@ -211,7 +229,6 @@ class AMQPBrokerInterceptor(BaseInterceptor):
         headers = dict(getattr(properties, "headers", None) or {})
         content_type = getattr(properties, "content_type", None)
         payload_hash = sha256(body).hexdigest()
-        task_id = getattr(properties, "message_id", None) or headers.get("messageId")
         used = {
             "payload_sha256": payload_hash,
             "payload_size_bytes": len(body),
@@ -227,29 +244,30 @@ class AMQPBrokerInterceptor(BaseInterceptor):
             "correlation_id": getattr(properties, "correlation_id", None),
             "reply_to": getattr(properties, "reply_to", None),
             "content_type": content_type,
-            "headers": sanitize_value(headers),
+            "headers": headers,
             "delivery_mode": getattr(properties, "delivery_mode", None),
             "priority": getattr(properties, "priority", None),
             "timestamp": getattr(properties, "timestamp", None),
             "redelivered": getattr(method, "redelivered", None),
         }
         custom_metadata.update(self._parse_routing_key(routing_key))
-        intersect_message_id = self._extract_json_field(preview, "messageId")
-        intersect_operation_id = self._extract_json_field(preview, "operationId")
-        if intersect_message_id is not None:
-            custom_metadata["intersect_message_id"] = intersect_message_id
-        if intersect_operation_id is not None:
-            custom_metadata["intersect_operation_id"] = intersect_operation_id
+        intersect_metadata = self._extract_intersect_metadata(headers, preview)
+        custom_metadata.update(intersect_metadata)
 
-        task_id = task_id or intersect_message_id or self._fallback_task_id(exchange, routing_key, body, properties)
-        activity_id = intersect_operation_id or routing_key
+        task_id = (
+            getattr(properties, "message_id", None)
+            or intersect_metadata.get("intersect_message_id")
+            or self._fallback_task_id(exchange, routing_key, body, properties)
+        )
+        activity_id = intersect_metadata.get("intersect_operation_id") or routing_key
+        campaign_id = intersect_metadata.get("intersect_campaign_id") or Flowcept.campaign_id
 
         return TaskObject.from_dict(
             {
                 "task_id": task_id,
                 "activity_id": activity_id,
                 "workflow_id": Flowcept.current_workflow_id,
-                "campaign_id": Flowcept.campaign_id,
+                "campaign_id": campaign_id,
                 "subtype": self._task_subtype,
                 "used": sanitize_value(used),
                 "custom_metadata": sanitize_value(custom_metadata),
@@ -257,12 +275,62 @@ class AMQPBrokerInterceptor(BaseInterceptor):
         )
 
     @staticmethod
-    def _extract_json_field(payload_preview, key):
-        if isinstance(payload_preview, dict):
-            value = payload_preview.get(key)
-            if isinstance(value, (str, int, float)):
-                return str(value)
+    def _string_value(value):
+        if isinstance(value, (str, int, float)):
+            return str(value)
         return None
+
+    @classmethod
+    def _extract_first_field(cls, *sources_and_keys):
+        for source, keys in sources_and_keys:
+            if not isinstance(source, dict):
+                continue
+            for key in keys:
+                value = cls._string_value(source.get(key))
+                if value is not None:
+                    return value
+        return None
+
+    @classmethod
+    def _extract_intersect_metadata(cls, headers, payload_preview):
+        metadata = {
+            "intersect_message_id": cls._extract_first_field(
+                (headers, ("message_id", "messageId")),
+                (payload_preview, ("message_id", "messageId")),
+            ),
+            "intersect_operation_id": cls._extract_first_field(
+                (headers, ("operation_id", "operationId")),
+                (payload_preview, ("operation_id", "operationId")),
+            ),
+            "intersect_campaign_id": cls._extract_first_field(
+                (headers, ("campaign_id", "campaignId")),
+            ),
+            "intersect_request_id": cls._extract_first_field(
+                (headers, ("request_id", "requestId")),
+                (payload_preview, ("request_id", "requestId")),
+            ),
+            "intersect_source": cls._extract_first_field(
+                (headers, ("source",)),
+                (payload_preview, ("source",)),
+            ),
+            "intersect_destination": cls._extract_first_field(
+                (headers, ("destination",)),
+                (payload_preview, ("destination",)),
+            ),
+            "intersect_sdk_version": cls._extract_first_field(
+                (headers, ("sdk_version", "sdkVersion")),
+                (payload_preview, ("sdk_version", "sdkVersion")),
+            ),
+            "intersect_created_at": cls._extract_first_field(
+                (headers, ("created_at", "createdAt")),
+                (payload_preview, ("created_at", "createdAt")),
+            ),
+            "intersect_lifecycle_type": cls._extract_first_field(
+                (headers, ("lifecycle_type", "lifecycleType")),
+                (payload_preview, ("lifecycle_type", "lifecycleType", "type")),
+            ),
+        }
+        return {key: value for key, value in metadata.items() if value is not None}
 
     @staticmethod
     def _fallback_task_id(exchange: str, routing_key: str, body: bytes, properties) -> str:

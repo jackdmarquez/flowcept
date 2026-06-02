@@ -24,6 +24,17 @@ For Kubernetes, create an equivalent Secret with `MONGO_INITDB_ROOT_USERNAME`,
 `MONGO_INITDB_ROOT_PASSWORD`, and `MONGO_URI`, then mount or expose those values
 to the MongoDB and Flowcept pods.
 
+## Provenance Sanitization
+
+Flowcept sanitizes provenance documents before MongoDB persistence by redacting
+sensitive values and renaming Mongo-unsafe JSON keys. Real INTERSECT lifecycle
+messages can include AsyncAPI/OpenAPI schema keys such as `$ref`; Flowcept stores
+those as safe keys such as `_dollar_ref` before writing to MongoDB.
+
+For local AMQP observer testing, small payload previews are useful for debugging.
+Production deployments should keep `payload_policy.max_payload_bytes` bounded so
+large lifecycle schemas do not expand provenance records unnecessarily.
+
 ## Apple Silicon
 
 The Compose files set:

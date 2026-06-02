@@ -43,6 +43,14 @@ def _properties(**kwargs):
     return SimpleNamespace(**defaults)
 
 
+def _contains_key(value, key):
+    if isinstance(value, dict):
+        return key in value or any(_contains_key(item, key) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_key(item, key) for item in value)
+    return False
+
+
 def test_prepare_task_msg_uses_message_id_precedence_and_sanitizes_json_preview(monkeypatch):
     monkeypatch.setattr(Flowcept, "current_workflow_id", "wf-1")
     monkeypatch.setattr(Flowcept, "campaign_id", "camp-1")
@@ -109,6 +117,56 @@ def test_prepare_task_msg_uses_json_payload_message_id_and_operation_id():
     assert task_dict["activity_id"] == "IntersectChess.collect"
     assert task_dict["custom_metadata"]["intersect_message_id"] == "payload-id"
     assert task_dict["custom_metadata"]["intersect_operation_id"] == "IntersectChess.collect"
+
+
+def test_prepare_task_msg_sanitizes_intersect_schema_refs_and_snake_case_headers(monkeypatch):
+    monkeypatch.setattr(Flowcept, "current_workflow_id", "wf-1")
+    monkeypatch.setattr(Flowcept, "campaign_id", "flowcept-camp")
+    interceptor = _interceptor()
+    interceptor._max_payload_bytes = 1024
+
+    headers = {
+        "message_id": "header-message",
+        "operation_id": "IntersectChess.status",
+        "campaign_id": "intersect-camp",
+        "request_id": "request-1",
+        "source": "service-a",
+        "destination": "service-b",
+        "sdk_version": "0.9.0",
+        "created_at": "2026-06-02T12:00:00Z",
+        "lifecycle_type": "status",
+        "Authorization": "Bearer secret",
+        "password": "pw",
+    }
+    body = b'{"payload": {"schema": {"properties": {"status": {"$ref": "#/components/schemas/IntersectCoreStatus"}}}}}'
+
+    task = interceptor.prepare_task_msg(
+        method=_method(),
+        properties=_properties(headers=headers),
+        body=body,
+    )
+    task_dict = task.to_dict()
+    custom_metadata = task_dict["custom_metadata"]
+
+    assert not _contains_key(task_dict, "$ref")
+    assert _contains_key(task_dict, "_dollar_ref")
+    assert task_dict["used"]["payload_preview"]["payload"]["schema"]["properties"]["status"] == {
+        "_dollar_ref": "#/components/schemas/IntersectCoreStatus"
+    }
+    assert task_dict["task_id"] == "header-message"
+    assert task_dict["activity_id"] == "IntersectChess.status"
+    assert task_dict["campaign_id"] == "intersect-camp"
+    assert custom_metadata["intersect_message_id"] == "header-message"
+    assert custom_metadata["intersect_operation_id"] == "IntersectChess.status"
+    assert custom_metadata["intersect_campaign_id"] == "intersect-camp"
+    assert custom_metadata["intersect_request_id"] == "request-1"
+    assert custom_metadata["intersect_source"] == "service-a"
+    assert custom_metadata["intersect_destination"] == "service-b"
+    assert custom_metadata["intersect_sdk_version"] == "0.9.0"
+    assert custom_metadata["intersect_created_at"] == "2026-06-02T12:00:00Z"
+    assert custom_metadata["intersect_lifecycle_type"] == "status"
+    assert custom_metadata["headers"]["Authorization"] == REDACTED
+    assert custom_metadata["headers"]["password"] == REDACTED
 
 
 def test_payload_preview_size_text_and_binary_handling():
