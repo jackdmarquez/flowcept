@@ -2,6 +2,7 @@
 .claude/settings.local.json
 **/*mlruns*
 **/*.env*
+!deployment/*.env.example
 **/*build*
 **/*egg*
 **/*pycache*

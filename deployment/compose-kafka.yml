@@ -3,12 +3,16 @@ services:
   flowcept_redis:
     container_name: flowcept_redis
     image: redis
+    platform: ${FLOWCEPT_DOCKER_PLATFORM:-linux/amd64}
     ports:
       - 6379:6379
 
   flowcept_mongo:
     container_name: flowcept_mongo
     image: mongo:latest
+    platform: ${FLOWCEPT_DOCKER_PLATFORM:-linux/amd64}
+    env_file:
+      - mongo.env
     ports:
       - 27017:27017
     volumes:
@@ -16,6 +20,7 @@ services:
 
   zookeeper:
     image: confluentinc/cp-zookeeper:6.1.1
+    platform: ${FLOWCEPT_DOCKER_PLATFORM:-linux/amd64}
     ports:
       - "2181:2181"
     environment:
@@ -24,6 +29,7 @@ services:
   # reachable on 9092 from the host and on 29092 from inside docker compose
   kafka:
     image: confluentinc/cp-kafka:6.1.1
+    platform: ${FLOWCEPT_DOCKER_PLATFORM:-linux/amd64}
     depends_on:
       - zookeeper
     ports:
@@ -40,6 +46,7 @@ services:
 
   init-kafka:
     image: confluentinc/cp-kafka:6.1.1
+    platform: ${FLOWCEPT_DOCKER_PLATFORM:-linux/amd64}
     depends_on:
       - kafka
     entrypoint: [ '/bin/sh', '-c' ]

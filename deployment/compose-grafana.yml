@@ -3,12 +3,16 @@ services:
   flowcept_redis:
     container_name: flowcept_redis
     image: redis
+    platform: ${FLOWCEPT_DOCKER_PLATFORM:-linux/amd64}
     ports:
       - 6379:6379
 
   flowcept_mongo:
     container_name: flowcept_mongo
     image: mongo:latest
+    platform: ${FLOWCEPT_DOCKER_PLATFORM:-linux/amd64}
+    env_file:
+      - mongo.env
     ports:
       - 27017:27017
     volumes:
@@ -17,6 +21,7 @@ services:
   flowcept_grafana:
     container_name: flowcept_grafana
     image: renanfs/mongodb-grafana
+    platform: ${FLOWCEPT_DOCKER_PLATFORM:-linux/amd64}
     ports:
       - "3000:3000"
     environment:
@@ -27,7 +32,7 @@ services:
       - grafana_data:/var/lib/grafana
     # To create a new MongoDB data-source connection:
     # HTTP: URL: http://localhost:3333
-    # MongoDB: mongodb://flowcept_mongo:27017
+    # MongoDB: mongodb://<user>:<password>@flowcept_mongo:27017/flowcept?authSource=admin
 
 networks:
   flowcept:
@@ -44,4 +49,3 @@ volumes:
 #    image: redis
 #    ports:
 #      - 60379:6379
-

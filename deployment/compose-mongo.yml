@@ -3,12 +3,16 @@ services:
   flowcept_redis:
     container_name: flowcept_redis
     image: redis
+    platform: ${FLOWCEPT_DOCKER_PLATFORM:-linux/amd64}
     ports:
       - 6379:6379
 
   flowcept_mongo:
     container_name: flowcept_mongo
     image: mongo:latest
+    platform: ${FLOWCEPT_DOCKER_PLATFORM:-linux/amd64}
+    env_file:
+      - mongo.env
     ports:
       - 27017:27017
     volumes:
@@ -28,4 +32,3 @@ volumes:
 #    image: redis
 #    ports:
 #      - 60379:6379
-
